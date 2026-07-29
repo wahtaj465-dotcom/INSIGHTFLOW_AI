@@ -1,0 +1,9 @@
+order_id,customer_name,region,product,quantity,price,order_date
+1,Rahul,North,Laptop,1,55000,2026-01-10
+2,Priya,South,Mouse,2,800,2026-01-11
+3,Aman,East,Keyboard,1,1500,2026-01-12
+4,Neha,West,Monitor,2,12000,2026-01-13
+5,Rohit,North,Laptop,1,58000,2026-01-14
+6,Ananya,South,Keyboard,3,1400,2026-01-15
+7,Karan,West,Mouse,5,750,2026-01-16
+8,Isha,East,Monitor,1,12500,2026-01-17

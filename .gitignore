@@ -1,0 +1,36 @@
+# Environment variables / secrets
+.env
+.env.*
+!.env.example
+
+# Python virtual environment
+venv/
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# IDE
+.vscode/
+.idea/
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+
+# Generated project outputs
+reports/
+
+# User-uploaded datasets
+data/uploads/
+
+
+# Temporary files
+*.log
+*.tmp
+
+# Test/cache files
+.pytest_cache/
+.coverage
+htmlcov/
