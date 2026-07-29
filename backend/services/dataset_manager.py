@@ -2,24 +2,37 @@ from uuid import uuid4
 from datetime import datetime, timezone
 from threading import RLock
 
+import pandas as pd
+
 
 class DatasetManager:
     """
-    In-memory dataset session manager for InsightFlow.
+    In-memory dataset session manager for InsightFlow AI.
 
-    Stores prepared datasets and their analytical metadata
-    so that the user can ask multiple questions without
-    preprocessing the dataset again.
+    Stores:
+        - cleaned dataframe
+        - schema information
+        - quality reports
+        - anomaly reports
+        - cleaning operations
+        - EDA results
+        - automated EDA chart specifications
 
-    V1 implementation:
-        Python memory
+    This allows the prepared dataset to be reused for
+    multiple analytical questions without preprocessing
+    the uploaded file again.
+
+    V1:
+        In-memory Python storage
 
     Future:
         Redis / database / object storage
     """
 
     def __init__(self):
+
         self.datasets = {}
+
         self.lock = RLock()
 
 
@@ -40,36 +53,98 @@ class DatasetManager:
         cleaned_anomalies=None,
         after_score=None,
         cleaning_log=None,
-        eda_results=None
+        eda_results=None,
+        eda_charts=None
     ):
-        """
-        Store a prepared dataset and return its dataset ID.
-        """
+
+        # ----------------------------------------------------
+        # Validate dataframe
+        # ----------------------------------------------------
 
         if cleaned_df is None:
+
             raise ValueError(
                 "cleaned_df cannot be None."
             )
 
+
+        if not isinstance(
+            cleaned_df,
+            pd.DataFrame
+        ):
+
+            raise TypeError(
+                "cleaned_df must be a Pandas DataFrame."
+            )
+
+
         if cleaned_df.empty:
+
             raise ValueError(
                 "Cannot store an empty dataset."
             )
 
+
+        # ----------------------------------------------------
+        # Create dataset ID
+        # ----------------------------------------------------
+
         dataset_id = uuid4().hex
 
-        now = datetime.now(
-            timezone.utc
-        ).isoformat()
+
+        now = (
+            datetime.now(
+                timezone.utc
+            ).isoformat()
+        )
+
+
+        # ----------------------------------------------------
+        # Normalize EDA charts
+        # ----------------------------------------------------
+
+        if eda_charts is None:
+
+            eda_charts = []
+
+
+        if not isinstance(
+            eda_charts,
+            list
+        ):
+
+            try:
+
+                eda_charts = list(
+                    eda_charts
+                )
+
+            except Exception:
+
+                eda_charts = []
+
+
+        # ----------------------------------------------------
+        # Build dataset session
+        # ----------------------------------------------------
 
         dataset_session = {
-            "dataset_id": dataset_id,
+
+            "dataset_id":
+                dataset_id,
 
             "original_filename":
                 original_filename,
 
+            # Keep a private copy so later processing cannot
+            # accidentally mutate the stored dataset.
+
             "cleaned_df":
                 cleaned_df.copy(),
+
+            # ------------------------------------------------
+            # Original dataset metadata
+            # ------------------------------------------------
 
             "original_schema":
                 original_schema or {},
@@ -83,6 +158,10 @@ class DatasetManager:
             "before_score":
                 before_score,
 
+            # ------------------------------------------------
+            # Cleaned dataset metadata
+            # ------------------------------------------------
+
             "cleaned_schema":
                 cleaned_schema or {},
 
@@ -95,11 +174,30 @@ class DatasetManager:
             "after_score":
                 after_score,
 
+            # ------------------------------------------------
+            # Cleaning
+            # ------------------------------------------------
+
             "cleaning_log":
                 cleaning_log or [],
 
+            # ------------------------------------------------
+            # EDA
+            # ------------------------------------------------
+
             "eda_results":
                 eda_results or {},
+
+            # ------------------------------------------------
+            # Automated EDA visualizations
+            # ------------------------------------------------
+
+            "eda_charts":
+                eda_charts,
+
+            # ------------------------------------------------
+            # Session metadata
+            # ------------------------------------------------
 
             "created_at":
                 now,
@@ -108,10 +206,26 @@ class DatasetManager:
                 now
         }
 
+
+        # ----------------------------------------------------
+        # Store dataset
+        # ----------------------------------------------------
+
         with self.lock:
+
             self.datasets[
                 dataset_id
             ] = dataset_session
+
+
+        print(
+            f"Dataset session created: {dataset_id}"
+        )
+
+        print(
+            f"Stored EDA charts: {len(eda_charts)}"
+        )
+
 
         return dataset_id
 
@@ -124,35 +238,45 @@ class DatasetManager:
         self,
         dataset_id
     ):
-        """
-        Retrieve a prepared dataset session.
-        """
 
         if not isinstance(
             dataset_id,
             str
         ):
+
             return None
+
 
         dataset_id = dataset_id.strip()
 
+
         if not dataset_id:
+
             return None
+
 
         with self.lock:
 
-            dataset = self.datasets.get(
-                dataset_id
+            dataset = (
+                self.datasets.get(
+                    dataset_id
+                )
             )
 
+
             if dataset is None:
+
                 return None
+
 
             dataset[
                 "last_accessed_at"
-            ] = datetime.now(
-                timezone.utc
-            ).isoformat()
+            ] = (
+                datetime.now(
+                    timezone.utc
+                ).isoformat()
+            )
+
 
             return dataset
 
@@ -165,6 +289,22 @@ class DatasetManager:
         self,
         dataset_id
     ):
+
+        if not isinstance(
+            dataset_id,
+            str
+        ):
+
+            return False
+
+
+        dataset_id = dataset_id.strip()
+
+
+        if not dataset_id:
+
+            return False
+
 
         with self.lock:
 
@@ -182,11 +322,22 @@ class DatasetManager:
         self,
         dataset_id
     ):
-        """
-        Delete a dataset session.
 
-        Returns True when deleted.
-        """
+        if not isinstance(
+            dataset_id,
+            str
+        ):
+
+            return False
+
+
+        dataset_id = dataset_id.strip()
+
+
+        if not dataset_id:
+
+            return False
+
 
         with self.lock:
 
@@ -194,11 +345,14 @@ class DatasetManager:
                 dataset_id
                 not in self.datasets
             ):
+
                 return False
+
 
             del self.datasets[
                 dataset_id
             ]
+
 
             return True
 
@@ -211,42 +365,94 @@ class DatasetManager:
         self,
         dataset_id
     ):
-        """
-        Return metadata without returning the complete
-        Pandas DataFrame.
-        """
 
-        dataset = self.get_dataset(
-            dataset_id
+        dataset = (
+            self.get_dataset(
+                dataset_id
+            )
         )
 
+
         if dataset is None:
+
             return None
+
 
         df = dataset[
             "cleaned_df"
         ]
 
-        before_score = dataset.get(
-            "before_score"
+
+        # ----------------------------------------------------
+        # Quality scores
+        # ----------------------------------------------------
+
+        before_score = (
+            dataset.get(
+                "before_score"
+            )
         )
 
-        after_score = dataset.get(
-            "after_score"
+
+        after_score = (
+            dataset.get(
+                "after_score"
+            )
         )
+
 
         improvement = None
 
+
         if (
             before_score is not None
-            and after_score is not None
+            and
+            after_score is not None
         ):
-            improvement = round(
-                after_score - before_score,
-                2
+
+            try:
+
+                improvement = round(
+                    float(after_score)
+                    -
+                    float(before_score),
+                    2
+                )
+
+            except (
+                TypeError,
+                ValueError
+            ):
+
+                improvement = None
+
+
+        # ----------------------------------------------------
+        # Retrieve charts
+        # ----------------------------------------------------
+
+        eda_charts = (
+            dataset.get(
+                "eda_charts",
+                []
             )
+        )
+
+
+        if not isinstance(
+            eda_charts,
+            list
+        ):
+
+            eda_charts = []
+
+
+        # ----------------------------------------------------
+        # API-safe dataset information
+        # ----------------------------------------------------
 
         return {
+
             "dataset_id":
                 dataset_id,
 
@@ -256,15 +462,37 @@ class DatasetManager:
                 ),
 
             "rows":
-                len(df),
+                int(
+                    len(df)
+                ),
 
             "columns":
-                list(df.columns),
+                [
+                    str(column)
+                    for column in df.columns
+                ],
 
             "column_count":
-                len(df.columns),
+                int(
+                    len(df.columns)
+                ),
+
+            # ------------------------------------------------
+            # Schema
+            # ------------------------------------------------
+
+            "schema":
+                dataset.get(
+                    "cleaned_schema",
+                    {}
+                ),
+
+            # ------------------------------------------------
+            # Quality
+            # ------------------------------------------------
 
             "quality": {
+
                 "before_score":
                     before_score,
 
@@ -293,11 +521,36 @@ class DatasetManager:
                     )
             },
 
+            # ------------------------------------------------
+            # EDA analysis
+            # ------------------------------------------------
+
             "eda_results":
                 dataset.get(
                     "eda_results",
                     {}
                 ),
+
+            # ------------------------------------------------
+            # IMPORTANT:
+            # Automated dashboard chart specifications
+            # ------------------------------------------------
+
+            "eda_charts":
+                eda_charts,
+
+            # ------------------------------------------------
+            # Helpful count for frontend/debugging
+            # ------------------------------------------------
+
+            "eda_chart_count":
+                len(
+                    eda_charts
+                ),
+
+            # ------------------------------------------------
+            # Session metadata
+            # ------------------------------------------------
 
             "created_at":
                 dataset.get(
@@ -312,12 +565,89 @@ class DatasetManager:
 
 
     # ========================================================
+    # GET CLEANED DATAFRAME
+    # ========================================================
+
+    def get_dataframe(
+        self,
+        dataset_id
+    ):
+
+        dataset = (
+            self.get_dataset(
+                dataset_id
+            )
+        )
+
+
+        if dataset is None:
+
+            return None
+
+
+        dataframe = (
+            dataset.get(
+                "cleaned_df"
+            )
+        )
+
+
+        if dataframe is None:
+
+            return None
+
+
+        return dataframe.copy()
+
+
+    # ========================================================
+    # GET EDA CHARTS
+    # ========================================================
+
+    def get_eda_charts(
+        self,
+        dataset_id
+    ):
+
+        dataset = (
+            self.get_dataset(
+                dataset_id
+            )
+        )
+
+
+        if dataset is None:
+
+            return []
+
+
+        charts = (
+            dataset.get(
+                "eda_charts",
+                []
+            )
+        )
+
+
+        if not isinstance(
+            charts,
+            list
+        ):
+
+            return []
+
+
+        return charts
+
+
+    # ========================================================
     # COUNT ACTIVE DATASETS
     # ========================================================
 
     def count(self):
 
         with self.lock:
+
             return len(
                 self.datasets
             )

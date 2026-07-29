@@ -1,6 +1,7 @@
+import re
+
 import duckdb
 import pandas as pd
-import re
 
 
 class SQLEngine:
@@ -8,28 +9,63 @@ class SQLEngine:
     DuckDB-based SQL engine for InsightFlow.
 
     Responsibilities:
-    1. Create a DuckDB connection
+    1. Create an in-memory DuckDB connection
     2. Register Pandas DataFrames
     3. Validate SQL queries
     4. Execute safe read-only SQL
-    5. Return results as Pandas DataFrames
-    6. Propagate execution errors to calling agents
+    5. Return Pandas DataFrames
+    6. Retrieve table schemas
     """
 
-    def __init__(self):
-        """
-        Create an in-memory DuckDB database.
-        """
 
-        self.connection = duckdb.connect(
-            database=":memory:"
+    def __init__(
+        self
+    ):
+
+        self.connection = (
+            duckdb.connect(
+                database=":memory:"
+            )
         )
 
         self.registered_tables = set()
 
 
     # ========================================================
-    # 1. REGISTER DATAFRAME
+    # VALIDATE IDENTIFIER
+    # ========================================================
+
+    @staticmethod
+    def _validate_identifier(
+        identifier
+    ):
+
+        if not isinstance(
+            identifier,
+            str
+        ):
+
+            raise TypeError(
+                "SQL identifier must be a string."
+            )
+
+
+        if not re.fullmatch(
+            r"[A-Za-z_][A-Za-z0-9_]*",
+            identifier
+        ):
+
+            raise ValueError(
+                f"Invalid SQL identifier: "
+                f"{identifier}"
+            )
+
+
+        return identifier
+
+
+    # ========================================================
+    # REGISTER DATAFRAME
     # ========================================================
 
     def register_dataframe(
@@ -37,15 +73,16 @@ class SQLEngine:
         df,
         table_name="dataset"
     ):
-        """
-        Register a Pandas DataFrame with DuckDB.
-        """
 
-        if not isinstance(df, pd.DataFrame):
+        if not isinstance(
+            df,
+            pd.DataFrame
+        ):
 
             raise TypeError(
                 "Input must be a Pandas DataFrame."
             )
+
 
         if df.empty:
 
@@ -53,75 +90,72 @@ class SQLEngine:
                 "Cannot register an empty DataFrame."
             )
 
-        # ----------------------------------------------------
-        # Validate table name
-        # ----------------------------------------------------
 
-        if not re.fullmatch(
-            r"[A-Za-z_][A-Za-z0-9_]*",
+        self._validate_identifier(
             table_name
+        )
+
+
+        # Remove previous registration if the same table
+        # name is being reused.
+
+        if (
+            table_name.lower()
+            in self.registered_tables
         ):
 
-            raise ValueError(
-                "Invalid table name."
-            )
+            try:
+
+                self.connection.unregister(
+                    table_name
+                )
+
+            except Exception:
+
+                pass
+
 
         self.connection.register(
             table_name,
             df
         )
 
+
         self.registered_tables.add(
             table_name.lower()
         )
 
+
         print(
-            f"\nDataset registered in DuckDB "
+            "\nDataset registered in DuckDB "
             f"as table: {table_name}"
         )
 
 
     # ========================================================
-    # 2. VALIDATE QUERY
+    # VALIDATE QUERY
     # ========================================================
 
-    def validate_query(self, query):
-        """
-        Validate SQL before execution.
+    def validate_query(
+        self,
+        query
+    ):
 
-        Safety rules:
-
-        1. Query must be a string
-        2. Query cannot be empty
-        3. Only SELECT or WITH queries are allowed
-        4. Multiple SQL statements are rejected
-        5. Dangerous SQL operations are rejected
-
-        Returns:
-
-            (True, None)
-
-        or:
-
-            (False, reason)
-        """
-
-        # ----------------------------------------------------
-        # Query must be a string
-        # ----------------------------------------------------
-
-        if not isinstance(query, str):
+        if not isinstance(
+            query,
+            str
+        ):
 
             return (
                 False,
                 "SQL query must be a string."
             )
 
-        cleaned_query = query.strip()
 
-        # ----------------------------------------------------
-        # Query cannot be empty
-        # ----------------------------------------------------
+        cleaned_query = (
+            query.strip()
+        )
+
 
         if not cleaned_query:
 
@@ -130,11 +164,14 @@ class SQLEngine:
                 "SQL query cannot be empty."
             )
 
+
         # ----------------------------------------------------
-        # Remove optional trailing semicolon
+        # Remove trailing semicolon
         # ----------------------------------------------------
 
-        if cleaned_query.endswith(";"):
+        if cleaned_query.endswith(
+            ";"
+        ):
 
             query_without_semicolon = (
                 cleaned_query[:-1].strip()
@@ -146,8 +183,9 @@ class SQLEngine:
                 cleaned_query
             )
 
+
         # ----------------------------------------------------
-        # Reject multiple SQL statements
+        # Multiple statements
         # ----------------------------------------------------
 
         if ";" in query_without_semicolon:
@@ -157,35 +195,33 @@ class SQLEngine:
                 "Multiple SQL statements are not allowed."
             )
 
-        # ----------------------------------------------------
-        # Normalize query
-        # ----------------------------------------------------
 
         normalized_query = (
             query_without_semicolon.lower()
         )
 
+
         # ----------------------------------------------------
-        # Only SELECT / WITH allowed
+        # SELECT / WITH only
         # ----------------------------------------------------
 
-        allowed_query = re.match(
-            r"^(select|with)\s",
+        if not re.match(
+            r"^(select|with)\b",
             normalized_query
-        )
-
-        if not allowed_query:
+        ):
 
             return (
                 False,
                 "Only SELECT and WITH queries are allowed."
             )
 
+
         # ----------------------------------------------------
         # Block dangerous operations
         # ----------------------------------------------------
 
         forbidden_keywords = [
+
             "insert",
             "update",
             "delete",
@@ -194,24 +230,32 @@ class SQLEngine:
             "create",
             "replace",
             "truncate",
+
             "attach",
             "detach",
+
             "copy",
             "export",
             "import",
+
             "install",
             "load",
+
             "call",
             "pragma"
         ]
+
 
         for keyword in forbidden_keywords:
 
             pattern = (
                 r"\b"
-                + re.escape(keyword)
+                + re.escape(
+                    keyword
+                )
                 + r"\b"
             )
+
 
             if re.search(
                 pattern,
@@ -220,101 +264,87 @@ class SQLEngine:
 
                 return (
                     False,
-                    f"Forbidden SQL operation detected: "
+                    "Forbidden SQL operation detected: "
                     f"{keyword.upper()}"
                 )
 
-        return True, None
+
+        return (
+            True,
+            None
+        )
 
 
     # ========================================================
-    # 3. EXECUTE QUERY
+    # EXECUTE QUERY
     # ========================================================
 
-    def execute_query(self, query):
-        """
-        Validate and execute a read-only SQL query.
+    def execute_query(
+        self,
+        query
+    ):
 
-        Returns:
-            Pandas DataFrame when successful.
+        if self.connection is None:
 
-        Raises:
-            ValueError:
-                If the SQL fails our safety validation.
+            raise RuntimeError(
+                "DuckDB connection is closed."
+            )
 
-            RuntimeError:
-                If DuckDB cannot execute the query.
-
-        Important:
-            Execution errors are intentionally propagated
-            so AI agents can inspect the real database error
-            and attempt to repair the SQL.
-        """
-
-        # ----------------------------------------------------
-        # Safety validation
-        # ----------------------------------------------------
 
         is_valid, error_message = (
-            self.validate_query(query)
+            self.validate_query(
+                query
+            )
         )
+
 
         if not is_valid:
 
             raise ValueError(
-                f"SQL query rejected: "
+                "SQL query rejected: "
                 f"{error_message}"
             )
 
-        # ----------------------------------------------------
-        # Execute query
-        # ----------------------------------------------------
 
         try:
 
-            result = (
+            return (
                 self.connection
-                .execute(query)
+                .execute(
+                    query
+                )
                 .fetchdf()
             )
 
-            return result
 
         except Exception as error:
 
-            # Preserve DuckDB's actual error message
-            # for SQLAgent correction/retry.
-
             raise RuntimeError(
-                f"DuckDB execution error: {error}"
+                "DuckDB execution error: "
+                f"{error}"
             ) from error
 
 
     # ========================================================
-    # 4. GET TABLE SCHEMA
+    # GET TABLE SCHEMA
     # ========================================================
 
     def get_table_schema(
         self,
         table_name="dataset"
     ):
-        """
-        Return information about columns in a
-        registered DuckDB table.
-        """
 
-        if not re.fullmatch(
-            r"[A-Za-z_][A-Za-z0-9_]*",
-            table_name
-        ):
+        if self.connection is None:
 
-            raise ValueError(
-                "Invalid table name."
+            raise RuntimeError(
+                "DuckDB connection is closed."
             )
 
-        # ----------------------------------------------------
-        # Make sure the requested table belongs to our engine
-        # ----------------------------------------------------
+
+        self._validate_identifier(
+            table_name
+        )
+
 
         if (
             table_name.lower()
@@ -323,12 +353,13 @@ class SQLEngine:
 
             raise ValueError(
                 f"Table '{table_name}' "
-                f"is not registered."
+                "is not registered."
             )
+
 
         try:
 
-            result = (
+            return (
                 self.connection
                 .execute(
                     f'DESCRIBE "{table_name}"'
@@ -336,28 +367,24 @@ class SQLEngine:
                 .fetchdf()
             )
 
-            return result
 
         except Exception as error:
 
             raise RuntimeError(
-                f"Could not retrieve schema for "
-                f"table '{table_name}': {error}"
+                "Could not retrieve schema for "
+                f"table '{table_name}': "
+                f"{error}"
             ) from error
 
 
     # ========================================================
-    # 5. CHECK REGISTERED TABLE
+    # CHECK TABLE
     # ========================================================
 
     def is_table_registered(
         self,
         table_name
     ):
-        """
-        Check whether a table has been registered
-        with this SQL engine.
-        """
 
         if not isinstance(
             table_name,
@@ -366,6 +393,7 @@ class SQLEngine:
 
             return False
 
+
         return (
             table_name.lower()
             in self.registered_tables
@@ -373,16 +401,17 @@ class SQLEngine:
 
 
     # ========================================================
-    # 6. CLOSE CONNECTION
+    # CLOSE
     # ========================================================
 
-    def close(self):
-        """
-        Close the DuckDB connection.
-        """
+    def close(
+        self
+    ):
 
         if self.connection is not None:
 
             self.connection.close()
 
             self.connection = None
+
+            self.registered_tables.clear()

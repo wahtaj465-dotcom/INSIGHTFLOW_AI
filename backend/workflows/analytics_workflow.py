@@ -3,10 +3,19 @@ from pathlib import Path
 
 import pandas as pd
 
-from langgraph.graph import StateGraph, START, END
+from langgraph.graph import (
+    StateGraph,
+    START,
+    END
+)
 
-from backend.agents.ingestion_agent import load_dataset
-from backend.agents.schema_agent import analyze_schema
+from backend.agents.ingestion_agent import (
+    load_dataset
+)
+
+from backend.agents.schema_agent import (
+    analyze_schema
+)
 
 from backend.agents.cleaning_agent import (
     generate_quality_report,
@@ -15,12 +24,29 @@ from backend.agents.cleaning_agent import (
     calculate_quality_score,
 )
 
-from backend.agents.eda_agent import perform_eda
-from backend.agents.sql_agent import SQLAgent
-from backend.agents.insight_agent import InsightAgent
+from backend.agents.eda_agent import (
+    perform_eda
+)
 
-from backend.services.sql_engine import SQLEngine
-from backend.services.llm_service import LLMService
+from backend.agents.sql_agent import (
+    SQLAgent
+)
+
+from backend.agents.insight_agent import (
+    InsightAgent
+)
+
+from backend.services.sql_engine import (
+    SQLEngine
+)
+
+from backend.services.llm_service import (
+    LLMService
+)
+
+from backend.services.visualization_service import (
+    VisualizationService
+)
 
 from backend.services.dataset_manager import (
     dataset_manager
@@ -31,23 +57,24 @@ from backend.services.dataset_manager import (
 # WORKFLOW STATE
 # ============================================================
 
-class AnalyticsState(TypedDict, total=False):
+class AnalyticsState(
+    TypedDict,
+    total=False
+):
 
-    # User / dataset input
     file_path: str
     original_filename: str
     dataset_id: str
     question: str
     table_name: str
 
-    # Original dataset
     raw_df: pd.DataFrame
+
     original_schema: dict
     original_quality_report: dict
     original_anomalies: dict
     before_score: float
 
-    # Cleaned dataset
     cleaned_df: pd.DataFrame
     cleaned_schema: dict
     cleaned_quality_report: dict
@@ -55,21 +82,25 @@ class AnalyticsState(TypedDict, total=False):
     after_score: float
     cleaning_log: list
 
-    # EDA
     eda_results: dict
+    eda_charts: list
+    result_chart: Any
 
-    # SQL
     sql_response: dict
     generated_sql: str
     sql_result: Any
     sql_attempts: list
 
-    # Insight
+    sql_success: bool
+
     insight_response: dict
     insight: str
     relevant_columns: list
 
-    # Final status
+    insight_success: bool
+    insight_source: str
+    insight_error: Any
+
     success: bool
     error: Any
 
@@ -79,22 +110,6 @@ class AnalyticsState(TypedDict, total=False):
 # ============================================================
 
 class AnalyticsWorkflow:
-    """
-    InsightFlow orchestration layer.
-
-    Supports:
-
-    1. prepare_dataset()
-       Preprocess a dataset once and store it.
-
-    2. ask_dataset()
-       Ask multiple questions against an already
-       prepared dataset.
-
-    3. run()
-       Backwards-compatible one-shot pipeline used
-       by the existing /api/analyze endpoint.
-    """
 
     def __init__(
         self,
@@ -102,36 +117,55 @@ class AnalyticsWorkflow:
         max_sql_retries=2
     ):
 
-        self.table_name = table_name
-        self.max_sql_retries = max_sql_retries
-
-        # Shared LLM service
-        self.llm_service = LLMService()
-
-        # Used by the legacy one-shot workflow.
-        self.sql_engine = SQLEngine()
-
-        self.sql_agent = SQLAgent(
-            llm_service=self.llm_service,
-            sql_engine=self.sql_engine,
-            table_name=self.table_name,
-            max_retries=self.max_sql_retries
+        self.table_name = (
+            table_name
         )
 
-        self.insight_agent = InsightAgent(
-            llm_service=self.llm_service
+        self.max_sql_retries = (
+            max_sql_retries
         )
 
-        # Three graphs:
-        #
-        # preparation_graph:
-        # upload -> preprocessing -> EDA
-        #
-        # question_graph:
-        # prepared dataframe -> SQL -> insight
-        #
-        # graph:
-        # backwards-compatible complete workflow
+
+        self.llm_service = (
+            LLMService()
+        )
+
+
+        self.visualization_service = (
+            VisualizationService()
+        )
+
+
+        self.sql_engine = (
+            SQLEngine()
+        )
+
+
+        self.sql_agent = (
+            SQLAgent(
+
+                llm_service=
+                    self.llm_service,
+
+                sql_engine=
+                    self.sql_engine,
+
+                table_name=
+                    self.table_name,
+
+                max_retries=
+                    self.max_sql_retries
+            )
+        )
+
+
+        self.insight_agent = (
+            InsightAgent(
+                llm_service=
+                    self.llm_service
+            )
+        )
+
 
         self.preparation_graph = (
             self._build_preparation_graph()
@@ -147,25 +181,27 @@ class AnalyticsWorkflow:
 
 
     # ========================================================
-    # NODE 1 — INGESTION
+    # INGESTION
     # ========================================================
 
     def ingestion_node(
         self,
-        state: AnalyticsState
+        state
     ):
 
         print(
             "\n[1/7] Loading dataset..."
         )
 
-        file_path = state[
-            "file_path"
-        ]
 
-        df = load_dataset(
-            file_path
+        df = (
+            load_dataset(
+                state[
+                    "file_path"
+                ]
+            )
         )
+
 
         print(
             f"Dataset loaded: "
@@ -173,118 +209,131 @@ class AnalyticsWorkflow:
             f"{len(df.columns)} columns"
         )
 
+
         return {
-            "raw_df": df,
-            "table_name": self.table_name
+
+            "raw_df":
+                df,
+
+            "table_name":
+                self.table_name
         }
 
 
     # ========================================================
-    # NODE 2 — ORIGINAL SCHEMA
+    # ORIGINAL SCHEMA
     # ========================================================
 
     def original_schema_node(
         self,
-        state: AnalyticsState
+        state
     ):
 
         print(
             "\n[2/7] Analyzing original schema..."
         )
 
-        df = state[
-            "raw_df"
-        ]
-
-        schema = analyze_schema(
-            df
-        )
 
         return {
-            "original_schema": schema
+
+            "original_schema":
+                analyze_schema(
+                    state[
+                        "raw_df"
+                    ]
+                )
         }
 
 
     # ========================================================
-    # NODE 3 — ORIGINAL QUALITY
+    # ORIGINAL QUALITY
     # ========================================================
 
     def original_quality_node(
         self,
-        state: AnalyticsState
+        state
     ):
 
         print(
-            "\n[3/7] Analyzing original data quality..."
+            "\n[3/7] Analyzing original "
+            "data quality..."
         )
 
-        df = state[
-            "raw_df"
-        ]
 
-        schema = state[
-            "original_schema"
-        ]
-
-        quality_report = (
+        report = (
             generate_quality_report(
-                df,
-                schema
+
+                state[
+                    "raw_df"
+                ],
+
+                state[
+                    "original_schema"
+                ]
             )
         )
 
+
         return {
+
             "original_quality_report":
-                quality_report
+                report
         }
 
 
     # ========================================================
-    # NODE 4 — ORIGINAL ANOMALIES
+    # ORIGINAL ANOMALIES
     # ========================================================
 
     def original_anomaly_node(
         self,
-        state: AnalyticsState
+        state
     ):
 
         print(
-            "\n[4/7] Detecting original anomalies..."
+            "\n[4/7] Detecting original "
+            "anomalies..."
         )
 
-        df = state[
-            "raw_df"
-        ]
-
-        schema = state[
-            "original_schema"
-        ]
-
-        quality_report = state[
-            "original_quality_report"
-        ]
 
         anomalies = (
             detect_numeric_anomalies(
-                df,
-                schema
+
+                state[
+                    "raw_df"
+                ],
+
+                state[
+                    "original_schema"
+                ]
             )
         )
 
+
         score = (
             calculate_quality_score(
-                df,
-                quality_report,
+
+                state[
+                    "raw_df"
+                ],
+
+                state[
+                    "original_quality_report"
+                ],
+
                 anomalies
             )
         )
+
 
         print(
             f"Original quality score: "
             f"{score}/100"
         )
 
+
         return {
+
             "original_anomalies":
                 anomalies,
 
@@ -294,39 +343,42 @@ class AnalyticsWorkflow:
 
 
     # ========================================================
-    # NODE 5 — CLEANING
+    # CLEANING
     # ========================================================
 
     def cleaning_node(
         self,
-        state: AnalyticsState
+        state
     ):
 
         print(
             "\n[5/7] Cleaning dataset..."
         )
 
-        df = state[
-            "raw_df"
-        ]
-
-        schema = state[
-            "original_schema"
-        ]
 
         cleaned_df, cleaning_log = (
             clean_dataset(
-                df,
-                schema
+
+                state[
+                    "raw_df"
+                ],
+
+                state[
+                    "original_schema"
+                ]
             )
         )
 
+
         print(
-            f"Cleaning completed with "
-            f"{len(cleaning_log)} operation(s)."
+            "Cleaning completed with "
+            f"{len(cleaning_log)} "
+            "operation(s)."
         )
 
+
         return {
+
             "cleaned_df":
                 cleaned_df,
 
@@ -336,21 +388,26 @@ class AnalyticsWorkflow:
 
 
     # ========================================================
-    # NODE 6 — CLEANED ANALYSIS
+    # CLEANED ANALYSIS
     # ========================================================
 
     def cleaned_analysis_node(
         self,
-        state: AnalyticsState
+        state
     ):
 
         print(
-            "\n[6/7] Re-analyzing cleaned dataset..."
+            "\n[6/7] Re-analyzing cleaned "
+            "dataset..."
         )
 
-        cleaned_df = state[
-            "cleaned_df"
-        ]
+
+        cleaned_df = (
+            state[
+                "cleaned_df"
+            ]
+        )
+
 
         cleaned_schema = (
             analyze_schema(
@@ -358,42 +415,55 @@ class AnalyticsWorkflow:
             )
         )
 
-        cleaned_quality_report = (
+
+        quality_report = (
             generate_quality_report(
+
                 cleaned_df,
+
                 cleaned_schema
             )
         )
 
-        cleaned_anomalies = (
+
+        anomalies = (
             detect_numeric_anomalies(
+
                 cleaned_df,
+
                 cleaned_schema
             )
         )
+
 
         after_score = (
             calculate_quality_score(
+
                 cleaned_df,
-                cleaned_quality_report,
-                cleaned_anomalies
+
+                quality_report,
+
+                anomalies
             )
         )
+
 
         print(
             f"Cleaned quality score: "
             f"{after_score}/100"
         )
 
+
         return {
+
             "cleaned_schema":
                 cleaned_schema,
 
             "cleaned_quality_report":
-                cleaned_quality_report,
+                quality_report,
 
             "cleaned_anomalies":
-                cleaned_anomalies,
+                anomalies,
 
             "after_score":
                 after_score
@@ -401,120 +471,126 @@ class AnalyticsWorkflow:
 
 
     # ========================================================
-    # NODE 7 — EDA
+    # EDA
     # ========================================================
 
     def eda_node(
         self,
-        state: AnalyticsState
+        state
     ):
 
         print(
             "\n[7/7] Running automated EDA..."
         )
 
-        cleaned_df = state[
-            "cleaned_df"
-        ]
 
-        cleaned_schema = state[
-            "cleaned_schema"
-        ]
-
-        eda_results = (
+        results = (
             perform_eda(
-                cleaned_df,
-                cleaned_schema
+
+                state[
+                    "cleaned_df"
+                ],
+
+                state[
+                    "cleaned_schema"
+                ]
             )
         )
+
 
         print(
             "EDA completed."
         )
 
+
         return {
+
             "eda_results":
-                eda_results
+                results
         }
 
 
     # ========================================================
-    # QUESTION NODE 1 — DATABASE
+    # DATABASE NODE
     # ========================================================
 
     def database_node(
         self,
-        state: AnalyticsState
+        state
     ):
 
         print(
-            "\n[1/3] Registering prepared dataset "
-            "in DuckDB..."
+            "\n[1/3] Registering prepared "
+            "dataset in DuckDB..."
         )
 
-        cleaned_df = state[
-            "cleaned_df"
-        ]
-
-        table_name = state.get(
-            "table_name",
-            self.table_name
-        )
 
         self.sql_engine.register_dataframe(
-            cleaned_df,
-            table_name=table_name
+
+            state[
+                "cleaned_df"
+            ],
+
+            table_name=
+                state.get(
+                    "table_name",
+                    self.table_name
+                )
         )
+
 
         return {}
 
 
     # ========================================================
-    # QUESTION NODE 2 — SQL AGENT
+    # SQL AGENT NODE
     # ========================================================
 
     def sql_agent_node(
         self,
-        state: AnalyticsState
+        state
     ):
 
         print(
             "\n[2/3] Running SQL Agent..."
         )
 
-        question = state[
-            "question"
-        ]
 
-        sql_response = (
+        response = (
             self.sql_agent.ask(
-                question
+                state[
+                    "question"
+                ]
             )
         )
 
-        if not sql_response.get(
+
+        if not response.get(
             "success",
             False
         ):
 
             error = (
-                sql_response.get(
+                response.get(
                     "error"
                 )
                 or
                 "SQL Agent failed."
             )
 
+
             print(
                 f"SQL Agent failed: {error}"
             )
 
+
             return {
+
                 "sql_response":
-                    sql_response,
+                    response,
 
                 "generated_sql":
-                    sql_response.get(
+                    response.get(
                         "sql"
                     ),
 
@@ -522,10 +598,13 @@ class AnalyticsWorkflow:
                     None,
 
                 "sql_attempts":
-                    sql_response.get(
+                    response.get(
                         "attempts",
                         []
                     ),
+
+                "sql_success":
+                    False,
 
                 "success":
                     False,
@@ -534,29 +613,40 @@ class AnalyticsWorkflow:
                     error
             }
 
+
         print(
             "SQL Agent completed successfully."
         )
 
+
         return {
+
             "sql_response":
-                sql_response,
+                response,
 
             "generated_sql":
-                sql_response.get(
+                response.get(
                     "sql"
                 ),
 
             "sql_result":
-                sql_response.get(
+                response.get(
                     "result"
                 ),
 
             "sql_attempts":
-                sql_response.get(
+                response.get(
                     "attempts",
                     []
                 ),
+
+            "sql_success":
+                True,
+
+            # SQL execution is the core analytical task.
+            # Once it succeeds, the request is successful.
+            "success":
+                True,
 
             "error":
                 None
@@ -569,118 +659,184 @@ class AnalyticsWorkflow:
 
     def route_after_sql(
         self,
-        state: AnalyticsState
+        state
     ):
 
-        sql_response = state.get(
-            "sql_response",
-            {}
-        )
-
-        if sql_response.get(
-            "success",
+        if state.get(
+            "sql_success",
             False
         ):
 
             return "insight"
 
+
         return "end"
 
 
     # ========================================================
-    # QUESTION NODE 3 — INSIGHT
+    # INSIGHT NODE
     # ========================================================
 
     def insight_agent_node(
         self,
-        state: AnalyticsState
+        state
     ):
 
         print(
-            "\n[3/3] Generating analytical insight..."
+            "\n[3/3] Generating analytical "
+            "insight..."
         )
 
-        sql_response = state[
-            "sql_response"
-        ]
 
-        insight_response = (
-            self.insight_agent.analyze(
+        try:
 
-                sql_response=
-                    sql_response,
+            response = (
+                self.insight_agent.analyze(
 
-                quality_report=
-                    state.get(
-                        "cleaned_quality_report"
-                    ),
+                    sql_response=
+                        state[
+                            "sql_response"
+                        ],
 
-                anomalies=
-                    state.get(
-                        "cleaned_anomalies"
-                    ),
+                    quality_report=
+                        state.get(
+                            "cleaned_quality_report"
+                        ),
 
-                eda_results=
-                    state.get(
-                        "eda_results"
-                    )
-            )
-        )
+                    anomalies=
+                        state.get(
+                            "cleaned_anomalies"
+                        ),
 
-        if not insight_response.get(
-            "success",
-            False
-        ):
-
-            error = (
-                insight_response.get(
-                    "error"
+                    eda_results=
+                        state.get(
+                            "eda_results"
+                        )
                 )
-                or
-                "Insight Agent failed."
             )
+
+
+        except Exception as error:
 
             print(
-                f"Insight Agent failed: "
-                f"{error}"
+                "Insight Agent encountered an "
+                f"unexpected error: {error}"
             )
 
+
+            # Important:
+            # SQL already succeeded. Do NOT change
+            # overall success to False.
+
             return {
+
                 "insight_response":
-                    insight_response,
+                    {},
 
                 "insight":
-                    None,
+                    (
+                        "The query completed "
+                        "successfully, but the "
+                        "analytical summary is "
+                        "temporarily unavailable."
+                    ),
 
                 "relevant_columns":
                     [],
 
-                "success":
+                "insight_success":
                     False,
 
+                "insight_source":
+                    "unavailable",
+
+                "insight_error":
+                    str(
+                        error
+                    ),
+
+                "success":
+                    True,
+
                 "error":
-                    error
+                    None
             }
 
-        print(
-            "Insight generated successfully."
+
+        insight = (
+            response.get(
+                "insight"
+            )
         )
 
+
+        source = (
+            response.get(
+                "source",
+                "llm"
+            )
+        )
+
+
+        llm_success = (
+            response.get(
+                "llm_success",
+                False
+            )
+        )
+
+
+        if source == "llm":
+
+            print(
+                "LLM insight generated "
+                "successfully."
+            )
+
+        elif source == "fallback":
+
+            print(
+                "Using local analytical "
+                "fallback insight."
+            )
+
+        else:
+
+            print(
+                "Analytical insight is using "
+                "degraded mode."
+            )
+
+
         return {
+
             "insight_response":
-                insight_response,
+                response,
 
             "insight":
-                insight_response.get(
-                    "insight"
-                ),
+                insight,
 
             "relevant_columns":
-                insight_response.get(
+                response.get(
                     "relevant_columns",
                     []
                 ),
 
+            "insight_success":
+                bool(
+                    insight
+                ),
+
+            "insight_source":
+                source,
+
+            "insight_error":
+                response.get(
+                    "llm_error"
+                ),
+
+            # SQL succeeded, therefore the analysis
+            # remains successful.
             "success":
                 True,
 
@@ -693,11 +849,16 @@ class AnalyticsWorkflow:
     # BUILD PREPARATION GRAPH
     # ========================================================
 
-    def _build_preparation_graph(self):
+    def _build_preparation_graph(
+        self
+    ):
 
-        workflow = StateGraph(
-            AnalyticsState
+        workflow = (
+            StateGraph(
+                AnalyticsState
+            )
         )
+
 
         workflow.add_node(
             "ingestion",
@@ -733,6 +894,7 @@ class AnalyticsWorkflow:
             "eda",
             self.eda_node
         )
+
 
         workflow.add_edge(
             START,
@@ -773,6 +935,7 @@ class AnalyticsWorkflow:
             "eda",
             END
         )
+
 
         return workflow.compile()
 
@@ -781,11 +944,16 @@ class AnalyticsWorkflow:
     # BUILD QUESTION GRAPH
     # ========================================================
 
-    def _build_question_graph(self):
+    def _build_question_graph(
+        self
+    ):
 
-        workflow = StateGraph(
-            AnalyticsState
+        workflow = (
+            StateGraph(
+                AnalyticsState
+            )
         )
+
 
         workflow.add_node(
             "database",
@@ -802,6 +970,7 @@ class AnalyticsWorkflow:
             self.insight_agent_node
         )
 
+
         workflow.add_edge(
             START,
             "database"
@@ -812,12 +981,15 @@ class AnalyticsWorkflow:
             "sql_agent"
         )
 
+
         workflow.add_conditional_edges(
+
             "sql_agent",
 
             self.route_after_sql,
 
             {
+
                 "insight":
                     "insight_agent",
 
@@ -826,10 +998,12 @@ class AnalyticsWorkflow:
             }
         )
 
+
         workflow.add_edge(
             "insight_agent",
             END
         )
+
 
         return workflow.compile()
 
@@ -838,17 +1012,16 @@ class AnalyticsWorkflow:
     # BUILD FULL GRAPH
     # ========================================================
 
-    def _build_full_graph(self):
-        """
-        Existing one-shot workflow.
+    def _build_full_graph(
+        self
+    ):
 
-        Maintained so /api/analyze and existing tests
-        continue to work.
-        """
-
-        workflow = StateGraph(
-            AnalyticsState
+        workflow = (
+            StateGraph(
+                AnalyticsState
+            )
         )
+
 
         workflow.add_node(
             "ingestion",
@@ -900,6 +1073,7 @@ class AnalyticsWorkflow:
             self.insight_agent_node
         )
 
+
         workflow.add_edge(
             START,
             "ingestion"
@@ -945,12 +1119,15 @@ class AnalyticsWorkflow:
             "sql_agent"
         )
 
+
         workflow.add_conditional_edges(
+
             "sql_agent",
 
             self.route_after_sql,
 
             {
+
                 "insight":
                     "insight_agent",
 
@@ -959,10 +1136,12 @@ class AnalyticsWorkflow:
             }
         )
 
+
         workflow.add_edge(
             "insight_agent",
             END
         )
+
 
         return workflow.compile()
 
@@ -976,22 +1155,23 @@ class AnalyticsWorkflow:
         file_path,
         original_filename=None
     ):
-        """
-        Run preprocessing once and store the prepared
-        dataset inside DatasetManager.
-        """
 
         self._validate_file_path(
             file_path
         )
 
+
         if original_filename is None:
 
             original_filename = (
-                Path(file_path).name
+                Path(
+                    file_path
+                ).name
             )
 
+
         initial_state = {
+
             "file_path":
                 file_path,
 
@@ -1008,6 +1188,7 @@ class AnalyticsWorkflow:
                 None
         }
 
+
         try:
 
             prepared_state = (
@@ -1016,9 +1197,11 @@ class AnalyticsWorkflow:
                 )
             )
 
+
         except Exception as error:
 
             return {
+
                 "success":
                     False,
 
@@ -1028,6 +1211,59 @@ class AnalyticsWorkflow:
                         f"{error}"
                     )
             }
+
+
+        # ----------------------------------------------------
+        # EDA CHARTS
+        # ----------------------------------------------------
+
+        print(
+            "\nGenerating visualization "
+            "metadata..."
+        )
+
+
+        try:
+
+            eda_charts = (
+                self.visualization_service
+                .generate_eda_charts(
+
+                    prepared_state[
+                        "cleaned_df"
+                    ],
+
+                    prepared_state[
+                        "cleaned_schema"
+                    ]
+                )
+            )
+
+
+        except Exception as error:
+
+            print(
+                "Visualization generation "
+                f"failed: {error}"
+            )
+
+            eda_charts = []
+
+
+        prepared_state[
+            "eda_charts"
+        ] = eda_charts
+
+
+        print(
+            f"Generated "
+            f"{len(eda_charts)} chart(s)."
+        )
+
+
+        # ----------------------------------------------------
+        # STORE SESSION
+        # ----------------------------------------------------
 
         try:
 
@@ -1090,13 +1326,18 @@ class AnalyticsWorkflow:
                     eda_results=
                         prepared_state.get(
                             "eda_results"
-                        )
+                        ),
+
+                    eda_charts=
+                        eda_charts
                 )
             )
+
 
         except Exception as error:
 
             return {
+
                 "success":
                     False,
 
@@ -1107,11 +1348,16 @@ class AnalyticsWorkflow:
                     )
             }
 
-        cleaned_df = prepared_state[
-            "cleaned_df"
-        ]
+
+        cleaned_df = (
+            prepared_state[
+                "cleaned_df"
+            ]
+        )
+
 
         return {
+
             "success":
                 True,
 
@@ -1170,7 +1416,10 @@ class AnalyticsWorkflow:
                 prepared_state.get(
                     "eda_results",
                     {}
-                )
+                ),
+
+            "eda_charts":
+                eda_charts
         }
 
 
@@ -1183,15 +1432,11 @@ class AnalyticsWorkflow:
         dataset_id,
         question
     ):
-        """
-        Ask a question against an already-prepared dataset.
-
-        Preprocessing and EDA are NOT repeated.
-        """
 
         self._validate_question(
             question
         )
+
 
         if not isinstance(
             dataset_id,
@@ -1202,9 +1447,11 @@ class AnalyticsWorkflow:
                 "dataset_id must be a string."
             )
 
+
         dataset_id = (
             dataset_id.strip()
         )
+
 
         if not dataset_id:
 
@@ -1212,15 +1459,18 @@ class AnalyticsWorkflow:
                 "dataset_id cannot be empty."
             )
 
+
         dataset = (
             dataset_manager.get_dataset(
                 dataset_id
             )
         )
 
+
         if dataset is None:
 
             return {
+
                 "success":
                     False,
 
@@ -1234,26 +1484,33 @@ class AnalyticsWorkflow:
                     "Dataset session not found."
             }
 
+
         # ----------------------------------------------------
-        # Important:
-        #
-        # Give every question its own DuckDB engine.
-        #
-        # This prevents one dataset/query from interfering
-        # with another dataset.
+        # QUESTION-SPECIFIC DUCKDB
         # ----------------------------------------------------
 
-        question_engine = SQLEngine()
-
-        question_sql_agent = SQLAgent(
-            llm_service=self.llm_service,
-            sql_engine=question_engine,
-            table_name=self.table_name,
-            max_retries=self.max_sql_retries
+        question_engine = (
+            SQLEngine()
         )
 
-        # Temporarily use these services for the
-        # question graph nodes.
+
+        question_sql_agent = (
+            SQLAgent(
+
+                llm_service=
+                    self.llm_service,
+
+                sql_engine=
+                    question_engine,
+
+                table_name=
+                    self.table_name,
+
+                max_retries=
+                    self.max_sql_retries
+            )
+        )
+
 
         previous_engine = (
             self.sql_engine
@@ -1263,6 +1520,7 @@ class AnalyticsWorkflow:
             self.sql_agent
         )
 
+
         self.sql_engine = (
             question_engine
         )
@@ -1270,6 +1528,7 @@ class AnalyticsWorkflow:
         self.sql_agent = (
             question_sql_agent
         )
+
 
         initial_state = {
 
@@ -1311,12 +1570,25 @@ class AnalyticsWorkflow:
                     {}
                 ),
 
+            "eda_charts":
+                dataset.get(
+                    "eda_charts",
+                    []
+                ),
+
+            "sql_success":
+                False,
+
+            "insight_success":
+                False,
+
             "success":
                 False,
 
             "error":
                 None
         }
+
 
         try:
 
@@ -1326,9 +1598,11 @@ class AnalyticsWorkflow:
                 )
             )
 
+
         except Exception as error:
 
             return {
+
                 "success":
                     False,
 
@@ -1345,13 +1619,17 @@ class AnalyticsWorkflow:
                     )
             }
 
+
         finally:
 
             try:
+
                 question_engine.close()
 
             except Exception:
+
                 pass
+
 
             self.sql_engine = (
                 previous_engine
@@ -1361,9 +1639,63 @@ class AnalyticsWorkflow:
                 previous_agent
             )
 
+
         final_state[
             "dataset_id"
         ] = dataset_id
+
+
+        # ----------------------------------------------------
+        # RESULT VISUALIZATION
+        #
+        # IMPORTANT:
+        # This depends on SQL success, NOT LLM success.
+        # ----------------------------------------------------
+
+        result_chart = None
+
+
+        if (
+            final_state.get(
+                "sql_success",
+                False
+            )
+            and
+            isinstance(
+                final_state.get(
+                    "sql_result"
+                ),
+                pd.DataFrame
+            )
+        ):
+
+            try:
+
+                result_chart = (
+                    self.visualization_service
+                    .generate_result_chart(
+
+                        final_state[
+                            "sql_result"
+                        ],
+
+                        question
+                    )
+                )
+
+
+            except Exception as error:
+
+                print(
+                    "Result visualization failed: "
+                    f"{error}"
+                )
+
+
+        final_state[
+            "result_chart"
+        ] = result_chart
+
 
         return final_state
 
@@ -1378,7 +1710,8 @@ class AnalyticsWorkflow:
     ):
 
         return (
-            dataset_manager.get_dataset_info(
+            dataset_manager
+            .get_dataset_info(
                 dataset_id
             )
         )
@@ -1394,14 +1727,15 @@ class AnalyticsWorkflow:
     ):
 
         return (
-            dataset_manager.delete_dataset(
+            dataset_manager
+            .delete_dataset(
                 dataset_id
             )
         )
 
 
     # ========================================================
-    # LEGACY ONE-SHOT RUN
+    # LEGACY RUN
     # ========================================================
 
     def run(
@@ -1409,11 +1743,6 @@ class AnalyticsWorkflow:
         file_path,
         question
     ):
-        """
-        Run the original complete pipeline.
-
-        Used by the existing /api/analyze endpoint.
-        """
 
         self._validate_file_path(
             file_path
@@ -1422,6 +1751,7 @@ class AnalyticsWorkflow:
         self._validate_question(
             question
         )
+
 
         initial_state = {
 
@@ -1434,12 +1764,19 @@ class AnalyticsWorkflow:
             "table_name":
                 self.table_name,
 
+            "sql_success":
+                False,
+
+            "insight_success":
+                False,
+
             "success":
                 False,
 
             "error":
                 None
         }
+
 
         try:
 
@@ -1449,9 +1786,11 @@ class AnalyticsWorkflow:
                 )
             )
 
+
         except Exception as error:
 
             return {
+
                 "success":
                     False,
 
@@ -1467,6 +1806,91 @@ class AnalyticsWorkflow:
                 "question":
                     question
             }
+
+
+        # ----------------------------------------------------
+        # EDA CHARTS
+        # ----------------------------------------------------
+
+        try:
+
+            final_state[
+                "eda_charts"
+            ] = (
+                self.visualization_service
+                .generate_eda_charts(
+
+                    final_state[
+                        "cleaned_df"
+                    ],
+
+                    final_state[
+                        "cleaned_schema"
+                    ]
+                )
+            )
+
+
+        except Exception as error:
+
+            print(
+                "EDA visualization failed: "
+                f"{error}"
+            )
+
+            final_state[
+                "eda_charts"
+            ] = []
+
+
+        # ----------------------------------------------------
+        # RESULT CHART
+        # ----------------------------------------------------
+
+        result_chart = None
+
+
+        if (
+            final_state.get(
+                "sql_success",
+                False
+            )
+            and
+            isinstance(
+                final_state.get(
+                    "sql_result"
+                ),
+                pd.DataFrame
+            )
+        ):
+
+            try:
+
+                result_chart = (
+                    self.visualization_service
+                    .generate_result_chart(
+
+                        final_state[
+                            "sql_result"
+                        ],
+
+                        question
+                    )
+                )
+
+
+            except Exception as error:
+
+                print(
+                    "Result visualization failed: "
+                    f"{error}"
+                )
+
+
+        final_state[
+            "result_chart"
+        ] = result_chart
+
 
         return final_state
 
@@ -1489,11 +1913,8 @@ class AnalyticsWorkflow:
                 "file_path must be a string."
             )
 
-        file_path = (
-            file_path.strip()
-        )
 
-        if not file_path:
+        if not file_path.strip():
 
             raise ValueError(
                 "file_path cannot be empty."
@@ -1518,6 +1939,7 @@ class AnalyticsWorkflow:
                 "question must be a string."
             )
 
+
         if not question.strip():
 
             raise ValueError(
@@ -1529,12 +1951,16 @@ class AnalyticsWorkflow:
     # CLOSE
     # ========================================================
 
-    def close(self):
+    def close(
+        self
+    ):
 
         if self.sql_engine is not None:
 
             try:
+
                 self.sql_engine.close()
 
             except Exception:
+
                 pass

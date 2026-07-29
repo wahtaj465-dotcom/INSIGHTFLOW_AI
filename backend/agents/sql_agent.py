@@ -3,19 +3,24 @@ import re
 
 class SQLAgent:
     """
-    LLM-powered SQL Agent for InsightFlow.
+    Hybrid SQL Agent for InsightFlow.
 
-    Responsibilities:
-    1. Receive a natural-language question
-    2. Inspect the database schema
-    3. Retrieve useful sample values
-    4. Ask the LLM to generate DuckDB SQL
-    5. Clean the generated SQL
-    6. Validate the SQL
-    7. Execute the SQL
-    8. Retry with LLM correction if validation/execution fails
-    9. Return SQL, result, and attempt history
+    Primary mode:
+        Natural language
+            -> Gemini
+            -> SQL
+            -> DuckDB
+
+    Fallback mode:
+        Natural language
+            -> deterministic local parser
+            -> SQL
+            -> DuckDB
+
+    The fallback allows basic analytics to continue when
+    Gemini quota/rate limits are reached.
     """
+
 
     def __init__(
         self,
@@ -32,54 +37,95 @@ class SQLAgent:
 
 
     # ========================================================
-    # GET DATABASE SCHEMA
+    # GET SCHEMA DATAFRAME
     # ========================================================
 
-    def get_schema_context(self):
-        """
-        Retrieve the DuckDB table schema and create richer
-        context for the LLM.
+    def get_schema_df(
+        self
+    ):
 
-        Example:
-
-        - region: VARCHAR
-          Sample values: North, South, East, West
-
-        - price: DOUBLE
-          Sample values: 55000, 800, 1500
-        """
-
-        schema_df = self.sql_engine.get_table_schema(
-            self.table_name
+        schema_df = (
+            self.sql_engine.get_table_schema(
+                self.table_name
+            )
         )
 
-        if schema_df is None or schema_df.empty:
+
+        if (
+            schema_df is None
+            or schema_df.empty
+        ):
 
             raise ValueError(
                 "Could not retrieve database schema."
             )
 
+
+        return schema_df
+
+
+    # ========================================================
+    # GET COLUMN NAMES
+    # ========================================================
+
+    def get_columns(
+        self
+    ):
+
+        schema_df = (
+            self.get_schema_df()
+        )
+
+
+        return (
+            schema_df[
+                "column_name"
+            ]
+            .astype(str)
+            .tolist()
+        )
+
+
+    # ========================================================
+    # GET SCHEMA CONTEXT
+    # ========================================================
+
+    def get_schema_context(
+        self
+    ):
+
+        schema_df = (
+            self.get_schema_df()
+        )
+
+
         schema_lines = []
+
 
         for _, row in schema_df.iterrows():
 
-            column_name = row["column_name"]
-            column_type = row["column_type"]
-
-            schema_lines.append(
-                f"- {column_name}: {column_type}"
+            column_name = str(
+                row["column_name"]
             )
 
-            # ------------------------------------------------
-            # Retrieve sample values
-            # ------------------------------------------------
+            column_type = str(
+                row["column_type"]
+            )
 
-            sample_query = f"""
-            SELECT DISTINCT "{column_name}"
-            FROM "{self.table_name}"
-            WHERE "{column_name}" IS NOT NULL
-            LIMIT 5
-            """
+
+            schema_lines.append(
+                f"- {column_name}: "
+                f"{column_type}"
+            )
+
+
+            sample_query = f'''
+                SELECT DISTINCT "{column_name}"
+                FROM "{self.table_name}"
+                WHERE "{column_name}" IS NOT NULL
+                LIMIT 5
+            '''
+
 
             try:
 
@@ -89,36 +135,41 @@ class SQLAgent:
                     )
                 )
 
+
                 if (
                     sample_df is not None
                     and not sample_df.empty
                 ):
 
                     sample_values = (
-                        sample_df[column_name]
+                        sample_df[
+                            column_name
+                        ]
                         .astype(str)
                         .tolist()
                     )
 
-                    sample_text = ", ".join(
-                        sample_values
-                    )
 
                     schema_lines.append(
-                        f"  Sample values: {sample_text}"
+                        "  Sample values: "
+                        + ", ".join(
+                            sample_values
+                        )
                     )
+
 
             except Exception:
 
-                # Sample values are helpful,
-                # but not required for SQL generation.
                 pass
 
-        return "\n".join(schema_lines)
+
+        return "\n".join(
+            schema_lines
+        )
 
 
     # ========================================================
-    # BUILD SQL GENERATION PROMPT
+    # BUILD LLM PROMPT
     # ========================================================
 
     def build_prompt(
@@ -126,101 +177,81 @@ class SQLAgent:
         question,
         schema_context
     ):
-        """
-        Build the initial prompt used to generate SQL.
-        """
 
-        prompt = f"""
-You are the SQL generation agent inside an automated
-data analytics platform called InsightFlow.
+        return f"""
+You are the SQL generation agent inside InsightFlow,
+an automated data analytics platform.
 
-Your job is to convert the user's analytics question
-into one valid DuckDB SQL query.
+Convert the user's analytics request into ONE valid
+DuckDB SQL query.
 
 
-DATABASE INFORMATION
+DATABASE
 
-Table name:
+Table:
 {self.table_name}
 
-Schema and sample values:
+Schema:
 
 {schema_context}
 
 
-SQL GENERATION RULES
+RULES
 
 1. Generate DuckDB-compatible SQL.
 
-2. Use ONLY the table and columns provided in the
-   database information.
+2. Use ONLY the table and columns provided above.
 
-3. Never invent columns or tables.
+3. Never invent tables or columns.
 
-4. Generate read-only analytical queries.
+4. Only SELECT or WITH queries are allowed.
 
-5. Only SELECT or WITH queries are allowed.
+5. Never generate INSERT, UPDATE, DELETE, DROP,
+   ALTER, CREATE, REPLACE, TRUNCATE, ATTACH,
+   DETACH, COPY, EXPORT, IMPORT, INSTALL, LOAD,
+   CALL or PRAGMA.
 
-6. Never generate:
-   INSERT
-   UPDATE
-   DELETE
-   DROP
-   ALTER
-   CREATE
-   REPLACE
-   TRUNCATE
-   ATTACH
-   DETACH
-   COPY
-   EXPORT
-   IMPORT
-   INSTALL
-   LOAD
-   CALL
-   PRAGMA
+6. Use aggregation only when the question actually
+   requires aggregation.
 
-7. Use appropriate SQL aggregation functions when
-   required, such as:
-   COUNT
-   SUM
-   AVG
-   MIN
-   MAX
+7. Use GROUP BY for category-level aggregations.
 
-8. Use GROUP BY when aggregation is required across
-   categories.
+8. Use ORDER BY for ranking.
 
-9. Use ORDER BY when ranking or comparison is
-   requested.
+9. Use LIMIT when the user explicitly asks for a
+   number of rows/results.
 
-10. Use LIMIT when the user explicitly asks for a
-    specific number of results such as:
-    top 5
-    bottom 10
-    first 3
+10. IMPORTANT FOR VISUALIZATIONS:
 
-11. For questions asking for the highest, lowest,
-    maximum, or minimum category, preserve ties when
-    practical instead of arbitrarily returning one row.
+    If the user asks for a distribution chart,
+    histogram, box plot, violin plot, scatter plot,
+    grouped plot, correlation visualization or other
+    chart that requires raw observations, return the
+    relevant raw columns rather than unnecessarily
+    aggregating them.
 
-12. Use sample values only to understand the data.
-    Do not assume values that are not shown.
+    Example:
 
-13. Do not assume business meaning beyond the
-    available column names, types, and values.
+    Request:
+    Box plot of distance_from_home_m by
+    behavior_profile colored by risk_level
 
-14. If the question can be answered directly from
-    the available data, generate the simplest correct
-    query.
+    Appropriate query:
 
-15. Return ONLY SQL.
+    SELECT
+        behavior_profile,
+        risk_level,
+        distance_from_home_m
+    FROM {self.table_name}
+    WHERE distance_from_home_m IS NOT NULL
 
-16. Do not return Markdown.
+11. Return ONLY SQL.
 
-17. Do not use ```sql code fences.
+12. No Markdown.
 
-18. Do not explain your answer.
+13. No code fences.
+
+14. No explanation.
 
 
 USER QUESTION
@@ -230,8 +261,6 @@ USER QUESTION
 
 SQL:
 """
-
-        return prompt
 
 
     # ========================================================
@@ -245,37 +274,21 @@ SQL:
         failed_sql,
         error_message
     ):
-        """
-        Build a prompt asking the LLM to repair a failed SQL
-        query.
 
-        The LLM receives:
-        - original question
-        - database schema
-        - failed SQL
-        - validation/execution error
-        """
+        return f"""
+Correct the failed DuckDB query.
 
-        prompt = f"""
-You are correcting a failed DuckDB SQL query inside
-an automated analytics platform.
+DATABASE
 
-The previous SQL query failed.
-
-Analyze the error and generate a corrected query.
-
-
-DATABASE INFORMATION
-
-Table name:
+Table:
 {self.table_name}
 
-Schema and sample values:
+Schema:
 
 {schema_context}
 
 
-ORIGINAL USER QUESTION
+USER QUESTION
 
 {question}
 
@@ -290,65 +303,42 @@ ERROR
 {error_message}
 
 
-CORRECTION RULES
+RULES
 
-1. Fix the SQL so it correctly answers the original
-   user question.
+Use only the provided table and columns.
 
-2. Generate DuckDB-compatible SQL.
+Generate DuckDB SQL.
 
-3. Use ONLY the table and columns provided above.
+Only SELECT or WITH.
 
-4. Never invent columns.
+Do not perform modifications or administrative
+operations.
 
-5. Never invent tables.
+Correct the actual cause of the error.
 
-6. Only SELECT or WITH queries are allowed.
+For visualization requests requiring distributions,
+box plots, violin plots or scatter plots, preserve
+the raw observations needed by the visualization.
 
-7. Never generate data-modifying or administrative SQL.
+Return ONLY SQL.
 
-8. Do not repeat the same mistake that caused the
-   previous query to fail.
+No Markdown.
 
-9. Preserve ties for highest/lowest questions when
-   practical.
-
-10. Return ONLY the corrected SQL.
-
-11. Do not use Markdown.
-
-12. Do not use ```sql code fences.
-
-13. Do not explain the correction.
+No explanation.
 
 
 CORRECTED SQL:
 """
 
-        return prompt
-
 
     # ========================================================
-    # CLEAN GENERATED SQL
+    # CLEAN SQL
     # ========================================================
 
+    @staticmethod
     def clean_generated_sql(
-        self,
         generated_sql
     ):
-        """
-        Remove common formatting added by an LLM.
-
-        Example:
-
-        ```sql
-        SELECT * FROM sales;
-        ```
-
-        becomes:
-
-        SELECT * FROM sales;
-        """
 
         if not isinstance(
             generated_sql,
@@ -359,11 +349,9 @@ CORRECTED SQL:
                 "Generated SQL must be a string."
             )
 
+
         sql = generated_sql.strip()
 
-        # ----------------------------------------------------
-        # Remove opening Markdown code fence
-        # ----------------------------------------------------
 
         sql = re.sub(
             r"^```(?:sql)?\s*",
@@ -372,9 +360,6 @@ CORRECTED SQL:
             flags=re.IGNORECASE
         )
 
-        # ----------------------------------------------------
-        # Remove closing Markdown code fence
-        # ----------------------------------------------------
 
         sql = re.sub(
             r"\s*```$",
@@ -382,9 +367,6 @@ CORRECTED SQL:
             sql
         )
 
-        # ----------------------------------------------------
-        # Remove accidental SQL: prefix
-        # ----------------------------------------------------
 
         sql = re.sub(
             r"^sql\s*:\s*",
@@ -393,11 +375,12 @@ CORRECTED SQL:
             flags=re.IGNORECASE
         )
 
+
         return sql.strip()
 
 
     # ========================================================
-    # GENERATE INITIAL SQL
+    # GENERATE USING LLM
     # ========================================================
 
     def generate_sql(
@@ -405,10 +388,6 @@ CORRECTED SQL:
         question,
         schema_context=None
     ):
-        """
-        Generate the initial SQL query from a natural-language
-        question.
-        """
 
         if not isinstance(
             question,
@@ -419,11 +398,16 @@ CORRECTED SQL:
                 "Question must be a string."
             )
 
-        if not question.strip():
+
+        question = question.strip()
+
+
+        if not question:
 
             raise ValueError(
                 "Question cannot be empty."
             )
+
 
         if schema_context is None:
 
@@ -431,10 +415,14 @@ CORRECTED SQL:
                 self.get_schema_context()
             )
 
-        prompt = self.build_prompt(
-            question,
-            schema_context
+
+        prompt = (
+            self.build_prompt(
+                question,
+                schema_context
+            )
         )
+
 
         generated_sql = (
             self.llm_service.generate(
@@ -442,13 +430,16 @@ CORRECTED SQL:
             )
         )
 
-        return self.clean_generated_sql(
-            generated_sql
+
+        return (
+            self.clean_generated_sql(
+                generated_sql
+            )
         )
 
 
     # ========================================================
-    # CORRECT FAILED SQL
+    # CORRECT USING LLM
     # ========================================================
 
     def correct_sql(
@@ -458,65 +449,631 @@ CORRECTED SQL:
         failed_sql,
         error_message
     ):
-        """
-        Ask Gemini to correct SQL that failed validation
-        or execution.
-        """
 
-        correction_prompt = (
+        prompt = (
             self.build_correction_prompt(
-                question=question,
-                schema_context=schema_context,
-                failed_sql=failed_sql,
-                error_message=error_message
+                question,
+                schema_context,
+                failed_sql,
+                error_message
             )
         )
+
 
         corrected_sql = (
             self.llm_service.generate(
-                correction_prompt
+                prompt
             )
         )
 
-        return self.clean_generated_sql(
-            corrected_sql
+
+        return (
+            self.clean_generated_sql(
+                corrected_sql
+            )
         )
 
 
     # ========================================================
-    # ASK SQL AGENT
+    # FIND COLUMNS MENTIONED IN QUESTION
     # ========================================================
 
-    def ask(self, question):
+    def find_mentioned_columns(
+        self,
+        question
+    ):
+
+        question_lower = (
+            question.lower()
+        )
+
+
+        columns = (
+            self.get_columns()
+        )
+
+
+        matches = []
+
+
+        # Exact database column names first.
+
+        for column in columns:
+
+            if (
+                column.lower()
+                in question_lower
+            ):
+
+                matches.append(
+                    column
+                )
+
+
+        # Also support human-friendly versions:
+        #
+        # distance from home
+        # ->
+        # distance_from_home_m
+
+        for column in columns:
+
+            normalized_column = (
+                column.lower()
+                .replace("_", " ")
+            )
+
+
+            if (
+                normalized_column
+                in question_lower
+                and column not in matches
+            ):
+
+                matches.append(
+                    column
+                )
+
+
+        return matches
+
+
+    # ========================================================
+    # QUOTE COLUMN
+    # ========================================================
+
+    @staticmethod
+    def quote_column(
+        column
+    ):
+
+        return (
+            '"'
+            + column.replace(
+                '"',
+                '""'
+            )
+            + '"'
+        )
+
+
+    # ========================================================
+    # LOCAL SQL FALLBACK
+    # ========================================================
+
+    def generate_fallback_sql(
+        self,
+        question
+    ):
         """
-        Complete SQL Agent workflow.
+        Deterministic SQL generator used when Gemini is
+        unavailable.
 
-        Question
-            ↓
-        Schema Context
-            ↓
-        Generate SQL
-            ↓
-        Validate
-            ↓
-        Execute
-            ↓
-        Success
+        This is NOT intended to replace the LLM.
 
-        If failure:
-
-        Error
-            ↓
-        LLM Correction
-            ↓
-        Validate Again
-            ↓
-        Execute Again
+        It handles common analytical requests so development
+        can continue during Gemini quota exhaustion.
         """
 
-        # ----------------------------------------------------
-        # Validate user question
-        # ----------------------------------------------------
+        question_lower = (
+            question.lower()
+        )
+
+
+        columns = (
+            self.get_columns()
+        )
+
+
+        mentioned = (
+            self.find_mentioned_columns(
+                question
+            )
+        )
+
+
+        table = (
+            f'"{self.table_name}"'
+        )
+
+
+        # ====================================================
+        # 1. VISUALIZATION / DISTRIBUTION REQUEST
+        # ====================================================
+
+        visualization_words = [
+
+            "chart",
+            "plot",
+            "graph",
+            "visualize",
+            "visualization",
+
+            "box plot",
+            "boxplot",
+
+            "violin",
+
+            "scatter",
+
+            "distribution",
+
+            "histogram"
+        ]
+
+
+        if any(
+            word in question_lower
+            for word in visualization_words
+        ):
+
+            if mentioned:
+
+                selected = ", ".join(
+                    self.quote_column(
+                        column
+                    )
+                    for column in mentioned
+                )
+
+
+                return (
+                    f"SELECT {selected} "
+                    f"FROM {table}"
+                )
+
+
+        # ====================================================
+        # 2. COUNT ROWS
+        # ====================================================
+
+        count_phrases = [
+
+            "how many rows",
+            "number of rows",
+            "total rows",
+            "row count",
+            "total records",
+            "number of records"
+        ]
+
+
+        if any(
+            phrase in question_lower
+            for phrase in count_phrases
+        ):
+
+            return (
+                f"SELECT COUNT(*) AS total_rows "
+                f"FROM {table}"
+            )
+
+
+        # ====================================================
+        # 3. DISTINCT VALUES
+        # ====================================================
+
+        if (
+            "distinct" in question_lower
+            or "unique values" in question_lower
+            or "unique categories" in question_lower
+        ):
+
+            if mentioned:
+
+                column = (
+                    mentioned[0]
+                )
+
+
+                quoted = (
+                    self.quote_column(
+                        column
+                    )
+                )
+
+
+                return (
+                    f"SELECT DISTINCT {quoted} "
+                    f"FROM {table} "
+                    f"ORDER BY {quoted}"
+                )
+
+
+        # ====================================================
+        # 4. COUNT BY CATEGORY
+        # ====================================================
+
+        if (
+            "count" in question_lower
+            and mentioned
+        ):
+
+            category = (
+                mentioned[0]
+            )
+
+
+            quoted = (
+                self.quote_column(
+                    category
+                )
+            )
+
+
+            return (
+                f"SELECT {quoted}, "
+                f"COUNT(*) AS count "
+                f"FROM {table} "
+                f"GROUP BY {quoted} "
+                f"ORDER BY count DESC"
+            )
+
+
+        # ====================================================
+        # 5. AVERAGE
+        # ====================================================
+
+        average_words = [
+
+            "average",
+            "avg",
+            "mean"
+        ]
+
+
+        if any(
+            word in question_lower
+            for word in average_words
+        ):
+
+            if mentioned:
+
+                # If multiple columns were mentioned,
+                # assume the final column is the metric
+                # and the first is the grouping column.
+
+                if len(
+                    mentioned
+                ) >= 2:
+
+                    group_column = (
+                        mentioned[0]
+                    )
+
+                    metric_column = (
+                        mentioned[-1]
+                    )
+
+
+                    group_q = (
+                        self.quote_column(
+                            group_column
+                        )
+                    )
+
+
+                    metric_q = (
+                        self.quote_column(
+                            metric_column
+                        )
+                    )
+
+
+                    return (
+                        f"SELECT {group_q}, "
+                        f"AVG({metric_q}) "
+                        f"AS average_{metric_column} "
+                        f"FROM {table} "
+                        f"GROUP BY {group_q} "
+                        f"ORDER BY average_{metric_column} "
+                        f"DESC"
+                    )
+
+
+                metric_column = (
+                    mentioned[0]
+                )
+
+
+                metric_q = (
+                    self.quote_column(
+                        metric_column
+                    )
+                )
+
+
+                return (
+                    f"SELECT AVG({metric_q}) "
+                    f"AS average_{metric_column} "
+                    f"FROM {table}"
+                )
+
+
+        # ====================================================
+        # 6. MAXIMUM
+        # ====================================================
+
+        maximum_words = [
+
+            "maximum",
+            "highest",
+            "max"
+        ]
+
+
+        if any(
+            word in question_lower
+            for word in maximum_words
+        ):
+
+            if mentioned:
+
+                column = (
+                    mentioned[-1]
+                )
+
+
+                quoted = (
+                    self.quote_column(
+                        column
+                    )
+                )
+
+
+                return (
+                    f"SELECT MAX({quoted}) "
+                    f"AS maximum_{column} "
+                    f"FROM {table}"
+                )
+
+
+        # ====================================================
+        # 7. MINIMUM
+        # ====================================================
+
+        minimum_words = [
+
+            "minimum",
+            "lowest",
+            "min"
+        ]
+
+
+        if any(
+            word in question_lower
+            for word in minimum_words
+        ):
+
+            if mentioned:
+
+                column = (
+                    mentioned[-1]
+                )
+
+
+                quoted = (
+                    self.quote_column(
+                        column
+                    )
+                )
+
+
+                return (
+                    f"SELECT MIN({quoted}) "
+                    f"AS minimum_{column} "
+                    f"FROM {table}"
+                )
+
+
+        # ====================================================
+        # 8. SHOW SPECIFIC COLUMNS
+        # ====================================================
+
+        if mentioned:
+
+            selected = ", ".join(
+                self.quote_column(
+                    column
+                )
+                for column in mentioned
+            )
+
+
+            return (
+                f"SELECT {selected} "
+                f"FROM {table} "
+                f"LIMIT 5000"
+            )
+
+
+        # ====================================================
+        # 9. GENERIC PREVIEW
+        # ====================================================
+
+        return (
+            f"SELECT * "
+            f"FROM {table} "
+            f"LIMIT 100"
+        )
+
+
+    # ========================================================
+    # EXECUTE SQL
+    # ========================================================
+
+    def execute_sql(
+        self,
+        sql,
+        question,
+        source,
+        attempts
+    ):
+
+        is_valid, validation_error = (
+            self.sql_engine.validate_query(
+                sql
+            )
+        )
+
+
+        if not is_valid:
+
+            attempts.append({
+
+                "attempt":
+                    len(attempts) + 1,
+
+                "sql":
+                    sql,
+
+                "stage":
+                    "validation",
+
+                "source":
+                    source,
+
+                "error":
+                    validation_error
+            })
+
+
+            return (
+                False,
+                None,
+                validation_error
+            )
+
+
+        try:
+
+            result = (
+                self.sql_engine.execute_query(
+                    sql
+                )
+            )
+
+
+        except Exception as error:
+
+            error_message = (
+                str(error)
+            )
+
+
+            attempts.append({
+
+                "attempt":
+                    len(attempts) + 1,
+
+                "sql":
+                    sql,
+
+                "stage":
+                    "execution",
+
+                "source":
+                    source,
+
+                "error":
+                    error_message
+            })
+
+
+            return (
+                False,
+                None,
+                error_message
+            )
+
+
+        if result is None:
+
+            error_message = (
+                "SQL engine returned no result."
+            )
+
+
+            attempts.append({
+
+                "attempt":
+                    len(attempts) + 1,
+
+                "sql":
+                    sql,
+
+                "stage":
+                    "execution",
+
+                "source":
+                    source,
+
+                "error":
+                    error_message
+            })
+
+
+            return (
+                False,
+                None,
+                error_message
+            )
+
+
+        attempts.append({
+
+            "attempt":
+                len(attempts) + 1,
+
+            "sql":
+                sql,
+
+            "stage":
+                "success",
+
+            "source":
+                source,
+
+            "error":
+                None
+        })
+
+
+        return (
+            True,
+            result,
+            None
+        )
+
+
+    # ========================================================
+    # ASK
+    # ========================================================
+
+    def ask(
+        self,
+        question
+    ):
 
         if not isinstance(
             question,
@@ -527,206 +1084,311 @@ CORRECTED SQL:
                 "Question must be a string."
             )
 
-        if not question.strip():
+
+        question = (
+            question.strip()
+        )
+
+
+        if not question:
 
             raise ValueError(
                 "Question cannot be empty."
             )
 
-        # ----------------------------------------------------
-        # Get schema once
-        # ----------------------------------------------------
+
+        attempts = []
+
 
         schema_context = (
             self.get_schema_context()
         )
 
-        # ----------------------------------------------------
-        # Generate initial SQL
-        # ----------------------------------------------------
 
-        sql = self.generate_sql(
-            question,
-            schema_context
-        )
+        # ====================================================
+        # TRY GEMINI FIRST
+        # ====================================================
 
-        # Keep history for debugging and future LangGraph use
-        attempts = []
+        llm_error = None
 
-        # Initial attempt + retry attempts
-        total_attempts = (
-            self.max_retries + 1
-        )
 
-        for attempt_number in range(
-            1,
-            total_attempts + 1
-        ):
+        try:
 
-            # =================================================
-            # VALIDATE SQL
-            # =================================================
-
-            is_valid, validation_error = (
-                self.sql_engine.validate_query(
-                    sql
+            sql = (
+                self.generate_sql(
+                    question,
+                    schema_context
                 )
             )
 
-            if not is_valid:
 
-                attempts.append(
-                    {
-                        "attempt": attempt_number,
-                        "sql": sql,
-                        "stage": "validation",
-                        "error": validation_error
-                    }
-                )
-
-                # No retries remaining
-                if attempt_number >= total_attempts:
-
-                    return {
-                        "success": False,
-                        "question": question,
-                        "sql": sql,
-                        "error": validation_error,
-                        "result": None,
-                        "attempts": attempts
-                    }
-
-                # Ask LLM to repair query
-                sql = self.correct_sql(
+            success, result, error = (
+                self.execute_sql(
+                    sql=sql,
                     question=question,
-                    schema_context=schema_context,
-                    failed_sql=sql,
-                    error_message=validation_error
+                    source="llm",
+                    attempts=attempts
                 )
+            )
 
-                continue
+
+            if success:
+
+                return {
+
+                    "success":
+                        True,
+
+                    "question":
+                        question,
+
+                    "sql":
+                        sql,
+
+                    "generated_sql":
+                        sql,
+
+                    "sql_source":
+                        "llm",
+
+                    "fallback_used":
+                        False,
+
+                    "llm_error":
+                        None,
+
+                    "error":
+                        None,
+
+                    "result":
+                        result,
+
+                    "attempts":
+                        attempts
+                }
+
 
             # =================================================
-            # EXECUTE SQL
+            # LLM CORRECTION
             # =================================================
 
-            try:
+            failed_sql = sql
+            correction_error = error
 
-                result = (
-                    self.sql_engine.execute_query(
-                        sql
+
+            for _ in range(
+                self.max_retries
+            ):
+
+                try:
+
+                    corrected_sql = (
+                        self.correct_sql(
+                            question=question,
+                            schema_context=schema_context,
+                            failed_sql=failed_sql,
+                            error_message=correction_error
+                        )
+                    )
+
+
+                except Exception as error:
+
+                    llm_error = str(
+                        error
+                    )
+
+                    break
+
+
+                success, result, error = (
+                    self.execute_sql(
+                        sql=corrected_sql,
+                        question=question,
+                        source="llm_correction",
+                        attempts=attempts
                     )
                 )
 
-            except Exception as error:
 
-                execution_error = str(
+                if success:
+
+                    return {
+
+                        "success":
+                            True,
+
+                        "question":
+                            question,
+
+                        "sql":
+                            corrected_sql,
+
+                        "generated_sql":
+                            corrected_sql,
+
+                        "sql_source":
+                            "llm",
+
+                        "fallback_used":
+                            False,
+
+                        "llm_error":
+                            None,
+
+                        "error":
+                            None,
+
+                        "result":
+                            result,
+
+                        "attempts":
+                            attempts
+                    }
+
+
+                failed_sql = (
+                    corrected_sql
+                )
+
+                correction_error = (
                     error
                 )
 
-                attempts.append(
-                    {
-                        "attempt": attempt_number,
-                        "sql": sql,
-                        "stage": "execution",
-                        "error": execution_error
-                    }
-                )
 
-                if attempt_number >= total_attempts:
+        except Exception as error:
 
-                    return {
-                        "success": False,
-                        "question": question,
-                        "sql": sql,
-                        "error": execution_error,
-                        "result": None,
-                        "attempts": attempts
-                    }
-
-                sql = self.correct_sql(
-                    question=question,
-                    schema_context=schema_context,
-                    failed_sql=sql,
-                    error_message=execution_error
-                )
-
-                continue
-
-            # =================================================
-            # HANDLE ENGINE RETURNING NONE
-            # =================================================
-
-            if result is None:
-
-                execution_error = (
-                    "SQL execution failed. "
-                    "The SQL engine returned no result."
-                )
-
-                attempts.append(
-                    {
-                        "attempt": attempt_number,
-                        "sql": sql,
-                        "stage": "execution",
-                        "error": execution_error
-                    }
-                )
-
-                if attempt_number >= total_attempts:
-
-                    return {
-                        "success": False,
-                        "question": question,
-                        "sql": sql,
-                        "error": execution_error,
-                        "result": None,
-                        "attempts": attempts
-                    }
-
-                sql = self.correct_sql(
-                    question=question,
-                    schema_context=schema_context,
-                    failed_sql=sql,
-                    error_message=execution_error
-                )
-
-                continue
-
-            # =================================================
-            # SUCCESS
-            # =================================================
-
-            attempts.append(
-                {
-                    "attempt": attempt_number,
-                    "sql": sql,
-                    "stage": "success",
-                    "error": None
-                }
+            llm_error = (
+                str(error)
             )
 
+
+        # ====================================================
+        # LOCAL FALLBACK
+        # ====================================================
+
+        try:
+
+            fallback_sql = (
+                self.generate_fallback_sql(
+                    question
+                )
+            )
+
+
+            success, result, fallback_error = (
+                self.execute_sql(
+                    sql=fallback_sql,
+                    question=question,
+                    source="local_fallback",
+                    attempts=attempts
+                )
+            )
+
+
+            if success:
+
+                return {
+
+                    "success":
+                        True,
+
+                    "question":
+                        question,
+
+                    "sql":
+                        fallback_sql,
+
+                    "generated_sql":
+                        fallback_sql,
+
+                    "sql_source":
+                        "local_fallback",
+
+                    "fallback_used":
+                        True,
+
+                    "llm_error":
+                        llm_error,
+
+                    "error":
+                        None,
+
+                    "result":
+                        result,
+
+                    "attempts":
+                        attempts
+                }
+
+
             return {
-                "success": True,
-                "question": question,
-                "sql": sql,
-                "error": None,
-                "result": result,
-                "attempts": attempts
+
+                "success":
+                    False,
+
+                "question":
+                    question,
+
+                "sql":
+                    fallback_sql,
+
+                "generated_sql":
+                    fallback_sql,
+
+                "sql_source":
+                    "local_fallback",
+
+                "fallback_used":
+                    True,
+
+                "llm_error":
+                    llm_error,
+
+                "error":
+                    fallback_error,
+
+                "result":
+                    None,
+
+                "attempts":
+                    attempts
             }
 
-        # ----------------------------------------------------
-        # Defensive fallback
-        # ----------------------------------------------------
 
-        return {
-            "success": False,
-            "question": question,
-            "sql": sql,
-            "error": (
-                "SQL Agent failed after "
-                "all retry attempts."
-            ),
-            "result": None,
-            "attempts": attempts
-        }
+        except Exception as fallback_error:
+
+            return {
+
+                "success":
+                    False,
+
+                "question":
+                    question,
+
+                "sql":
+                    None,
+
+                "generated_sql":
+                    None,
+
+                "sql_source":
+                    None,
+
+                "fallback_used":
+                    True,
+
+                "llm_error":
+                    llm_error,
+
+                "error":
+                    str(
+                        fallback_error
+                    ),
+
+                "result":
+                    None,
+
+                "attempts":
+                    attempts
+            }
