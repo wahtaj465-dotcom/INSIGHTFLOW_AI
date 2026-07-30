@@ -794,9 +794,11 @@ def ask_dataset(
                     )
             },
 
-            "visualization":
-                result.get(
-                    "result_chart"
+            "visualization":(
+                result.get("chart")
+                or result.get("visualization")
+                or result.get("result_chart")
+                    
                 ),
 
             "insight":
@@ -1230,9 +1232,10 @@ async def analyze_dataset(
                     )
             },
 
-            "visualization":
-                result.get(
-                    "result_chart"
+            "visualization":(
+                result.get("chart")
+                or result.get("visualization")
+                    
                 ),
 
             "insight":

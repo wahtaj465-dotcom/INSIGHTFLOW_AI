@@ -1284,9 +1284,12 @@ class AnalyticsWorkflow:
             # =================================================
             # GENERATE RESULT VISUALIZATION
             # =================================================
+            
+            # =================================================
+# GENERATE RESULT VISUALIZATION
+# =================================================
 
             chart = None
-
 
             try:
 
@@ -1294,10 +1297,11 @@ class AnalyticsWorkflow:
                     self.visualization_service
                     .generate_result_chart(
                         df=result_df,
-                        question=question
+                        question=question,
+                        source_df=cleaned_df,
+                        schema=cleaned_schema
                     )
                 )
-
 
             except Exception as error:
 
@@ -1307,6 +1311,85 @@ class AnalyticsWorkflow:
                 )
 
                 chart = None
+
+
+            # =================================================
+            # VISUALIZATION DEBUG
+            # =================================================
+
+            print("\n========== VISUALIZATION DEBUG ==========")
+
+            print(
+                "Question:",
+                question
+            )
+
+            print(
+                "SQL result columns:",
+                result_df.columns.tolist()
+            )
+
+            print(
+                "SQL result shape:",
+                result_df.shape
+            )
+
+            print(
+                "Source columns:",
+                cleaned_df.columns.tolist()
+            )
+
+            print(
+                "Source shape:",
+                cleaned_df.shape
+            )
+
+            print(
+                "Chart generated:",
+                chart is not None
+            )
+
+            if chart:
+
+                print(
+                    "Chart type:",
+                    chart.get("chart_type")
+                )
+
+                print(
+                    "X:",
+                    chart.get("x")
+                )
+
+                print(
+                    "Y:",
+                    chart.get("y")
+                )
+
+                print(
+                    "Color:",
+                    chart.get("color")
+                )
+
+                print(
+                    "Chart rows:",
+                    len(
+                        chart.get(
+                            "data",
+                            []
+                        )
+                    )
+                )
+
+                print(
+                    "Metadata:",
+                    chart.get("metadata")
+                )
+
+            print("=========================================\n")
+
+
+
 
 
             # =================================================

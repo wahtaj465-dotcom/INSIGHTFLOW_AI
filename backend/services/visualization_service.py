@@ -1629,27 +1629,160 @@ class VisualizationService:
             /
             average
         )
+    # ========================================================
+# QUESTION COLUMN DETECTION
+# ========================================================
+
+    def _find_question_columns(
+        self,
+        question,
+        df,
+        schema=None
+    ):
+        """
+        Detect dataset columns explicitly mentioned in the
+        user's natural-language question.
+
+        Returns columns in the order they appear in the question.
+        """
+
+        if not isinstance(question, str):
+            return []
+
+        if not isinstance(df, pd.DataFrame):
+            return []
+
+        question_text = question.lower()
+
+        matches = []
+
+        for column in df.columns:
+
+            column_text = str(column).lower()
+
+            variants = {
+                column_text,
+                column_text.replace("_", " "),
+                column_text.replace("-", " "),
+            }
+
+            positions = []
+
+            for variant in variants:
+
+                pattern = (
+                    r"(?<![a-z0-9_])"
+                    + re.escape(variant)
+                    + r"(?![a-z0-9_])"
+                )
+
+                match = re.search(
+                    pattern,
+                    question_text
+                )
+
+                if match:
+                    positions.append(
+                        match.start()
+                    )
+
+            if positions:
+
+                matches.append(
+                    (
+                        min(positions),
+                        column
+                    )
+                )
+
+        matches.sort(
+            key=lambda item: item[0]
+        )
+
+        return [
+            column
+            for _, column in matches
+        ]
+
+    # ========================================================
+# VISUALIZATION SOURCE SELECTION
+# ========================================================
+
+    def _select_visualization_source(
+        self,
+        result_df,
+        source_df,
+        requested_type
+    ):
+        """
+        Choose whether visualization should use the SQL result
+        or the full cleaned dataset.
+
+        Distribution and relationship charts generally require
+        row-level observations, while aggregated comparison
+        charts generally benefit from SQL results.
+        """
+
+        row_level_types = {
+            "box",
+            "violin",
+            "histogram",
+            "scatter",
+            "heatmap"
+        }
+
+        if (
+            requested_type in row_level_types
+            and isinstance(source_df, pd.DataFrame)
+            and not source_df.empty
+        ):
+            return source_df, "source_dataset"
+
+        return result_df, "sql_result"
+    
+
+
 
     # ========================================================
     # RESULT CHART
     # ========================================================
 
+    # ========================================================
+# RESULT CHART
+# ========================================================
+
     def generate_result_chart(
         self,
         df,
-        question=None
+        question=None,
+        source_df=None,
+        schema=None
     ):
         """
-        Generate visualization metadata from SQL result.
+        Generate deterministic visualization metadata for an
+        analytical query.
 
-        Explicit user visualization requests take priority.
+        df:
+            SQL/query result.
+
+        source_df:
+            Full cleaned row-level dataset.
+
+        schema:
+            Semantic schema for source_df.
+
+        Strategy:
+        - Explicit visualization requests take priority.
+        - Distribution/relationship charts use row-level data.
+        - Aggregated comparisons prefer SQL results.
+        - Columns explicitly mentioned in the question are
+        preferred over positional guessing.
         """
 
         if df is None:
             return None
 
         if not isinstance(df, pd.DataFrame):
-
             raise TypeError(
                 "SQL result must be a Pandas DataFrame."
             )
@@ -1657,8 +1790,13 @@ class VisualizationService:
         if df.empty:
             return None
 
-        columns = list(
-            df.columns
+        if schema is None:
+            schema = {}
+
+        requested_type = (
+            self._detect_requested_chart_type(
+                question
+            )
         )
 
         # ====================================================
@@ -1666,17 +1804,21 @@ class VisualizationService:
         # ====================================================
 
         if (
+            requested_type is None
+            and
             len(df) == 1
             and
-            len(columns) == 1
+            len(df.columns) == 1
         ):
+
+            column = df.columns[0]
 
             return {
                 "chart_type": "kpi",
 
                 "title":
                     self._pretty_name(
-                        columns[0]
+                        column
                     ),
 
                 "value":
@@ -1691,225 +1833,304 @@ class VisualizationService:
 
                 "reason":
                     (
-                        "Single-value query result "
-                        "is best displayed as a KPI."
+                        "Single-value query result is best "
+                        "displayed as a KPI."
                     ),
 
                 "metadata": {
-                    "intent": "summary"
+                    "intent": "summary",
+                    "data_source": "sql_result"
                 }
             }
 
-        numeric_columns = []
-        datetime_columns = []
-        categorical_columns = []
+        # ====================================================
+        # SELECT VISUALIZATION DATA SOURCE
+        # ====================================================
 
-        for column in columns:
-
-            series = df[column]
-
-            if self._is_datetime(
-                series
-            ):
-
-                datetime_columns.append(
-                    column
-                )
-
-            elif self._is_numeric(
-                series
-            ):
-
-                numeric_columns.append(
-                    column
-                )
-
-            else:
-
-                categorical_columns.append(
-                    column
-                )
-
-        requested_type = (
-            self._detect_requested_chart_type(
-                question
+        working_df, data_source = (
+            self._select_visualization_source(
+                result_df=df,
+                source_df=source_df,
+                requested_type=requested_type
             )
         )
+
+        # ====================================================
+        # CLASSIFY WORKING DATASET COLUMNS
+        # ====================================================
+
+        if (
+            data_source == "source_dataset"
+            and schema
+        ):
+
+            groups = self._collect_columns(
+                working_df,
+                schema
+            )
+
+            numeric_columns = list(
+                groups["Numerical"]
+            )
+
+            datetime_columns = list(
+                groups["Datetime"]
+            )
+
+            categorical_columns = (
+                list(groups["Categorical"])
+                +
+                list(groups["Boolean"])
+            )
+
+        else:
+
+            numeric_columns = []
+            datetime_columns = []
+            categorical_columns = []
+
+            for column in working_df.columns:
+
+                series = working_df[column]
+
+                if self._is_datetime(series):
+
+                    datetime_columns.append(
+                        column
+                    )
+
+                elif self._is_numeric(series):
+
+                    numeric_columns.append(
+                        column
+                    )
+
+                else:
+
+                    categorical_columns.append(
+                        column
+                    )
+
+        # ====================================================
+        # FIND COLUMNS MENTIONED BY USER
+        # ====================================================
+
+        mentioned_columns = (
+            self._find_question_columns(
+                question,
+                working_df,
+                schema
+            )
+        )
+
+        mentioned_numeric = [
+            column
+            for column in mentioned_columns
+            if column in numeric_columns
+        ]
+
+        mentioned_categories = [
+            column
+            for column in mentioned_columns
+            if column in categorical_columns
+        ]
+
+        mentioned_datetimes = [
+            column
+            for column in mentioned_columns
+            if column in datetime_columns
+        ]
 
         # ====================================================
         # EXPLICIT BOX / VIOLIN
         # ====================================================
 
-        if (
-            requested_type
-            in {
-                "box",
-                "violin"
-            }
-            and
-            numeric_columns
-        ):
+        if requested_type in {
+            "box",
+            "violin"
+        }:
+
+            if not numeric_columns:
+                return None
 
             numeric_column = (
-                numeric_columns[-1]
+                mentioned_numeric[0]
+                if mentioned_numeric
+                else numeric_columns[0]
             )
 
-            if categorical_columns:
+            category_column = (
+                mentioned_categories[0]
+                if mentioned_categories
+                else None
+            )
 
-                category_column = (
-                    categorical_columns[0]
+            color_column = None
+
+            if len(mentioned_categories) >= 2:
+
+                color_column = (
+                    mentioned_categories[1]
                 )
 
-                color_column = None
+            elif (
+                category_column
+                and len(categorical_columns) >= 2
+            ):
 
-                if (
-                    len(categorical_columns)
-                    >= 2
-                ):
-
-                    color_column = (
-                        categorical_columns[1]
-                    )
-
-                selected_columns = [
-                    category_column,
-                    numeric_column
+                remaining_categories = [
+                    column
+                    for column in categorical_columns
+                    if column != category_column
                 ]
 
-                if color_column:
+                if remaining_categories:
 
-                    selected_columns.insert(
-                        1,
-                        color_column
+                    # Only automatically use a color grouping
+                    # when the question implies it.
+                    question_lower = (
+                        question.lower()
+                        if isinstance(question, str)
+                        else ""
                     )
 
-                chart_df = (
-                    df[
-                        selected_columns
-                    ]
-                    .copy()
+                    if any(
+                        phrase in question_lower
+                        for phrase in [
+                            "color by",
+                            "colored by",
+                            "colour by",
+                            "grouped by",
+                            "split by"
+                        ]
+                    ):
+                        color_column = (
+                            remaining_categories[0]
+                        )
+
+            selected_columns = [
+                numeric_column
+            ]
+
+            if category_column:
+                selected_columns.insert(
+                    0,
+                    category_column
                 )
 
-                chart_df[
-                    numeric_column
-                ] = pd.to_numeric(
-                    chart_df[
-                        numeric_column
-                    ],
+            if (
+                color_column
+                and
+                color_column not in selected_columns
+            ):
+                selected_columns.append(
+                    color_column
+                )
+
+            chart_df = (
+                working_df[
+                    selected_columns
+                ]
+                .copy()
+            )
+
+            chart_df[numeric_column] = (
+                pd.to_numeric(
+                    chart_df[numeric_column],
                     errors="coerce"
                 )
+            )
 
-                chart_df[
-                    category_column
-                ] = (
-                    chart_df[
-                        category_column
+            chart_df = (
+                chart_df.dropna(
+                    subset=[
+                        numeric_column
                     ]
+                )
+            )
+
+            if chart_df.empty:
+                return None
+
+            if category_column:
+
+                chart_df[category_column] = (
+                    chart_df[category_column]
                     .fillna("Missing")
                     .astype(str)
                 )
 
-                if color_column:
+            if color_column:
 
-                    chart_df[
-                        color_column
-                    ] = (
-                        chart_df[
-                            color_column
-                        ]
-                        .fillna("Missing")
-                        .astype(str)
-                    )
-
-                chart_df = (
-                    chart_df.dropna(
-                        subset=[
-                            numeric_column
-                        ]
-                    )
+                chart_df[color_column] = (
+                    chart_df[color_column]
+                    .fillna("Missing")
+                    .astype(str)
                 )
 
-                if not chart_df.empty:
+            if category_column:
 
-                    return self._create_chart(
-                        chart_type=requested_type,
-
-                        title=
-                            self._question_title(
-                                question,
-                                fallback=(
-                                    f"{self._pretty_name(numeric_column)} "
-                                    "by "
-                                    f"{self._pretty_name(category_column)}"
-                                )
-                            ),
-
-                        x=category_column,
-
-                        y=numeric_column,
-
-                        color=color_column,
-
-                        data=
-                            self.dataframe_to_records(
-                                chart_df
-                            ),
-
-                        reason=(
-                            "The user explicitly requested "
-                            f"a {requested_type} plot."
-                        ),
-
-                        metadata={
-                            "intent":
-                                "group_distribution",
-
-                            "grouped":
-                                True,
-
-                            "category":
-                                category_column,
-
-                            "metric":
-                                numeric_column,
-
-                            "color_group":
-                                color_column
-                        }
-                    )
-
-            box_data = (
-                self._create_boxplot_data(
-                    df[numeric_column],
-                    numeric_column
+                fallback_title = (
+                    f"{self._pretty_name(numeric_column)} "
+                    "by "
+                    f"{self._pretty_name(category_column)}"
                 )
-            )
+
+            else:
+
+                fallback_title = (
+                    f"{self._pretty_name(numeric_column)} "
+                    "Distribution"
+                )
 
             return self._create_chart(
-                chart_type="box",
+                chart_type=requested_type,
 
                 title=
                     self._question_title(
                         question,
-                        fallback=(
-                            f"{self._pretty_name(numeric_column)} "
-                            "Distribution"
-                        )
+                        fallback=fallback_title
                     ),
 
-                x=numeric_column,
+                x=category_column,
 
                 y=numeric_column,
 
-                data=box_data,
+                color=color_column,
+
+                data=
+                    self.dataframe_to_records(
+                        chart_df
+                    ),
 
                 reason=(
                     "The user explicitly requested "
-                    "a box plot."
+                    f"a {requested_type} plot."
                 ),
 
                 metadata={
-                    "intent": "distribution"
+                    "intent":
+                        (
+                            "group_distribution"
+                            if category_column
+                            else
+                            "distribution"
+                        ),
+
+                    "metric":
+                        numeric_column,
+
+                    "category":
+                        category_column,
+
+                    "color_group":
+                        color_column,
+
+                    "data_source":
+                        data_source,
+
+                    "row_count":
+                        len(chart_df)
                 }
             )
 
@@ -1917,19 +2138,26 @@ class VisualizationService:
         # EXPLICIT HISTOGRAM
         # ====================================================
 
-        if (
-            requested_type == "histogram"
-            and numeric_columns
-        ):
+        if requested_type == "histogram":
 
-            column = numeric_columns[0]
+            if not numeric_columns:
+                return None
+
+            column = (
+                mentioned_numeric[0]
+                if mentioned_numeric
+                else numeric_columns[0]
+            )
 
             histogram = (
                 self._create_histogram_data(
-                    df[column],
+                    working_df[column],
                     column
                 )
             )
+
+            if not histogram:
+                return None
 
             return self._create_chart(
                 chart_type="histogram",
@@ -1955,7 +2183,9 @@ class VisualizationService:
                 ),
 
                 metadata={
-                    "intent": "distribution"
+                    "intent": "distribution",
+                    "metric": column,
+                    "data_source": data_source
                 }
             )
 
@@ -1963,27 +2193,82 @@ class VisualizationService:
         # EXPLICIT SCATTER
         # ====================================================
 
-        if (
-            requested_type == "scatter"
-            and
-            len(numeric_columns) >= 2
-        ):
+        if requested_type == "scatter":
 
-            x_column = numeric_columns[0]
-            y_column = numeric_columns[1]
+            if len(numeric_columns) < 2:
+                return None
+
+            if len(mentioned_numeric) >= 2:
+
+                x_column = mentioned_numeric[0]
+                y_column = mentioned_numeric[1]
+
+            else:
+
+                x_column = numeric_columns[0]
+                y_column = numeric_columns[1]
+
+            selected_columns = [
+                x_column,
+                y_column
+            ]
+
+            color_column = None
+
+            if mentioned_categories:
+
+                color_column = (
+                    mentioned_categories[0]
+                )
+
+                selected_columns.append(
+                    color_column
+                )
 
             chart_df = (
-                df[
-                    [
+                working_df[
+                    selected_columns
+                ]
+                .copy()
+            )
+
+            chart_df[x_column] = (
+                pd.to_numeric(
+                    chart_df[x_column],
+                    errors="coerce"
+                )
+            )
+
+            chart_df[y_column] = (
+                pd.to_numeric(
+                    chart_df[y_column],
+                    errors="coerce"
+                )
+            )
+
+            chart_df = (
+                chart_df
+                .dropna(
+                    subset=[
                         x_column,
                         y_column
                     ]
-                ]
-                .dropna()
+                )
                 .head(
                     self.max_scatter_points
                 )
             )
+
+            if chart_df.empty:
+                return None
+
+            if color_column:
+
+                chart_df[color_column] = (
+                    chart_df[color_column]
+                    .fillna("Missing")
+                    .astype(str)
+                )
 
             return self._create_chart(
                 chart_type="scatter",
@@ -2002,6 +2287,8 @@ class VisualizationService:
 
                 y=y_column,
 
+                color=color_column,
+
                 data=
                     self.dataframe_to_records(
                         chart_df
@@ -2013,7 +2300,12 @@ class VisualizationService:
                 ),
 
                 metadata={
-                    "intent": "relationship"
+                    "intent": "relationship",
+                    "x_metric": x_column,
+                    "y_metric": y_column,
+                    "color_group": color_column,
+                    "data_source": data_source,
+                    "sample_size": len(chart_df)
                 }
             )
 
@@ -2021,110 +2313,168 @@ class VisualizationService:
         # EXPLICIT HEATMAP
         # ====================================================
 
-        if (
-            requested_type == "heatmap"
-            and
-            len(numeric_columns) >= 2
-        ):
+        if requested_type == "heatmap":
+
+            selected_numeric = (
+                mentioned_numeric
+                if len(mentioned_numeric) >= 2
+                else numeric_columns
+            )
 
             numeric_df = (
                 self._prepare_numeric_dataframe(
-                    df,
-                    numeric_columns
+                    working_df,
+                    selected_numeric
                 )
             )
 
-            if numeric_df.shape[1] >= 2:
+            if numeric_df.shape[1] < 2:
+                return None
 
-                matrix = (
-                    numeric_df.corr()
-                )
+            matrix = (
+                numeric_df.corr()
+            )
 
-                return self._create_chart(
-                    chart_type="heatmap",
+            return self._create_chart(
+                chart_type="heatmap",
 
-                    title=
-                        self._question_title(
-                            question,
-                            fallback=(
-                                "Numerical Correlation "
-                                "Heatmap"
-                            )
-                        ),
-
-                    x="x",
-
-                    y="y",
-
-                    data=
-                        self._correlation_records(
-                            matrix
-                        ),
-
-                    reason=(
-                        "The user explicitly requested "
-                        "a heatmap."
+                title=
+                    self._question_title(
+                        question,
+                        fallback=(
+                            "Numerical Correlation Heatmap"
+                        )
                     ),
 
-                    metadata={
-                        "intent": "correlation",
-                        "value": "correlation"
-                    }
-                )
+                x="x",
+
+                y="y",
+
+                data=
+                    self._correlation_records(
+                        matrix
+                    ),
+
+                reason=(
+                    "The user explicitly requested "
+                    "a heatmap."
+                ),
+
+                metadata={
+                    "intent": "correlation",
+                    "value": "correlation",
+                    "data_source": data_source,
+                    "columns": list(
+                        numeric_df.columns
+                    )
+                }
+            )
 
         # ====================================================
         # EXPLICIT STACKED BAR
         # ====================================================
 
-        if (
-            requested_type == "stacked_bar"
-            and
-            len(categorical_columns) >= 2
-        ):
+        if requested_type == "stacked_bar":
 
-            x_column = (
-                categorical_columns[0]
-            )
+            # Prefer SQL result for aggregated output.
 
-            color_column = (
-                categorical_columns[1]
-            )
+            bar_df = df
 
-            chart_df = (
-                df[
-                    [
-                        x_column,
-                        color_column
-                    ]
-                ]
-                .copy()
-            )
-
-            chart_df[x_column] = (
-                chart_df[x_column]
-                .fillna("Missing")
-                .astype(str)
-            )
-
-            chart_df[color_column] = (
-                chart_df[color_column]
-                .fillna("Missing")
-                .astype(str)
-            )
-
-            chart_df = (
-                chart_df
-                .groupby(
-                    [
-                        x_column,
-                        color_column
-                    ]
+            result_categories = [
+                column
+                for column in bar_df.columns
+                if not self._is_numeric(
+                    bar_df[column]
                 )
-                .size()
-                .reset_index(
-                    name="count"
+                and not self._is_datetime(
+                    bar_df[column]
+                )
+            ]
+
+            result_numeric = [
+                column
+                for column in bar_df.columns
+                if self._is_numeric(
+                    bar_df[column]
+                )
+            ]
+
+            mentioned_result = (
+                self._find_question_columns(
+                    question,
+                    bar_df
                 )
             )
+
+            mentioned_result_categories = [
+                column
+                for column in mentioned_result
+                if column in result_categories
+            ]
+
+            if len(mentioned_result_categories) >= 2:
+
+                x_column = (
+                    mentioned_result_categories[0]
+                )
+
+                color_column = (
+                    mentioned_result_categories[1]
+                )
+
+            elif len(result_categories) >= 2:
+
+                x_column = result_categories[0]
+                color_column = result_categories[1]
+
+            else:
+
+                return None
+
+            if result_numeric:
+
+                y_column = (
+                    result_numeric[-1]
+                )
+
+                chart_df = (
+                    bar_df[
+                        [
+                            x_column,
+                            color_column,
+                            y_column
+                        ]
+                    ]
+                    .copy()
+                )
+
+            else:
+
+                chart_df = (
+                    bar_df[
+                        [
+                            x_column,
+                            color_column
+                        ]
+                    ]
+                    .copy()
+                )
+
+                chart_df = (
+                    chart_df
+                    .groupby(
+                        [
+                            x_column,
+                            color_column
+                        ]
+                    )
+                    .size()
+                    .reset_index(
+                        name="count"
+                    )
+                )
+
+                y_column = "count"
 
             return self._create_chart(
                 chart_type="stacked_bar",
@@ -2141,7 +2491,7 @@ class VisualizationService:
 
                 x=x_column,
 
-                y="count",
+                y=y_column,
 
                 color=color_column,
 
@@ -2156,7 +2506,8 @@ class VisualizationService:
                 ),
 
                 metadata={
-                    "intent": "composition"
+                    "intent": "composition",
+                    "data_source": "sql_result"
                 }
             )
 
@@ -2164,101 +2515,196 @@ class VisualizationService:
         # EXPLICIT LINE
         # ====================================================
 
-        if (
-            requested_type == "line"
-            and
-            numeric_columns
-        ):
+        if requested_type == "line":
 
-            if datetime_columns:
+            line_df = df
 
-                x_column = (
-                    datetime_columns[0]
+            result_numeric = [
+                column
+                for column in line_df.columns
+                if self._is_numeric(
+                    line_df[column]
                 )
+            ]
 
-            elif categorical_columns:
-
-                x_column = (
-                    categorical_columns[0]
+            result_datetime = [
+                column
+                for column in line_df.columns
+                if self._is_datetime(
+                    line_df[column]
                 )
+            ]
+
+            result_categories = [
+                column
+                for column in line_df.columns
+                if column not in result_numeric
+                and column not in result_datetime
+            ]
+
+            if not result_numeric:
+                return None
+
+            mentioned_result = (
+                self._find_question_columns(
+                    question,
+                    line_df
+                )
+            )
+
+            y_candidates = [
+                column
+                for column in mentioned_result
+                if column in result_numeric
+            ]
+
+            x_candidates = [
+                column
+                for column in mentioned_result
+                if (
+                    column in result_datetime
+                    or column in result_categories
+                )
+            ]
+
+            y_column = (
+                y_candidates[0]
+                if y_candidates
+                else result_numeric[0]
+            )
+
+            if x_candidates:
+
+                x_column = x_candidates[0]
+
+            elif result_datetime:
+
+                x_column = result_datetime[0]
+
+            elif result_categories:
+
+                x_column = result_categories[0]
 
             else:
 
-                x_column = None
+                return None
 
-            if x_column:
+            chart_df = (
+                line_df[
+                    [
+                        x_column,
+                        y_column
+                    ]
+                ]
+                .dropna()
+                .copy()
+            )
 
-                y_column = (
-                    numeric_columns[0]
-                )
+            if x_column in result_datetime:
 
                 chart_df = (
-                    df[
-                        [
-                            x_column,
-                            y_column
-                        ]
-                    ]
-                    .dropna()
-                    .copy()
+                    chart_df.sort_values(
+                        x_column
+                    )
                 )
 
-                if x_column in datetime_columns:
+            return self._create_chart(
+                chart_type="line",
 
-                    chart_df = (
-                        chart_df.sort_values(
-                            x_column
+                title=
+                    self._question_title(
+                        question,
+                        fallback=(
+                            f"{self._pretty_name(y_column)} "
+                            "by "
+                            f"{self._pretty_name(x_column)}"
                         )
-                    )
-
-                return self._create_chart(
-                    chart_type="line",
-
-                    title=
-                        self._question_title(
-                            question,
-                            fallback=(
-                                f"{self._pretty_name(y_column)} "
-                                "by "
-                                f"{self._pretty_name(x_column)}"
-                            )
-                        ),
-
-                    x=x_column,
-
-                    y=y_column,
-
-                    data=
-                        self.dataframe_to_records(
-                            chart_df
-                        ),
-
-                    reason=(
-                        "The user explicitly requested "
-                        "a line chart."
                     ),
 
-                    metadata={
-                        "intent": "trend"
-                    }
-                )
+                x=x_column,
+
+                y=y_column,
+
+                data=
+                    self.dataframe_to_records(
+                        chart_df
+                    ),
+
+                reason=(
+                    "The user explicitly requested "
+                    "a line chart."
+                ),
+
+                metadata={
+                    "intent": "trend",
+                    "data_source": "sql_result"
+                }
+            )
 
         # ====================================================
         # EXPLICIT BAR
         # ====================================================
 
-        if (
-            requested_type == "bar"
-            and
-            categorical_columns
-            and
-            numeric_columns
-        ):
+        if requested_type == "bar":
+
+            result_numeric = [
+                column
+                for column in df.columns
+                if self._is_numeric(
+                    df[column]
+                )
+            ]
+
+            result_categories = [
+                column
+                for column in df.columns
+                if column not in result_numeric
+                and not self._is_datetime(
+                    df[column]
+                )
+            ]
+
+            mentioned_result = (
+                self._find_question_columns(
+                    question,
+                    df
+                )
+            )
+
+            mentioned_result_numeric = [
+                column
+                for column in mentioned_result
+                if column in result_numeric
+            ]
+
+            mentioned_result_categories = [
+                column
+                for column in mentioned_result
+                if column in result_categories
+            ]
+
+            if not result_numeric:
+                return None
+
+            if not result_categories:
+                return None
+
+            x_column = (
+                mentioned_result_categories[0]
+                if mentioned_result_categories
+                else result_categories[0]
+            )
+
+            y_column = (
+                mentioned_result_numeric[0]
+                if mentioned_result_numeric
+                else result_numeric[-1]
+            )
 
             return self._category_numeric_bar(
                 df,
-                categorical_columns[0],
-                numeric_columns[0],
+                x_column,
+                y_column,
                 question
             )
 
@@ -2266,19 +2712,37 @@ class VisualizationService:
         # AUTOMATIC DATETIME + NUMERIC
         # ====================================================
 
+        result_numeric = [
+            column
+            for column in df.columns
+            if self._is_numeric(
+                df[column]
+            )
+        ]
+
+        result_datetime = [
+            column
+            for column in df.columns
+            if self._is_datetime(
+                df[column]
+            )
+        ]
+
+        result_categories = [
+            column
+            for column in df.columns
+            if column not in result_numeric
+            and column not in result_datetime
+        ]
+
         if (
-            datetime_columns
+            result_datetime
             and
-            numeric_columns
+            result_numeric
         ):
 
-            x_column = (
-                datetime_columns[0]
-            )
-
-            y_column = (
-                numeric_columns[0]
-            )
+            x_column = result_datetime[0]
+            y_column = result_numeric[0]
 
             chart_df = (
                 df[
@@ -2306,7 +2770,6 @@ class VisualizationService:
                     ),
 
                 x=x_column,
-
                 y=y_column,
 
                 data=
@@ -2320,7 +2783,8 @@ class VisualizationService:
                 ),
 
                 metadata={
-                    "intent": "temporal"
+                    "intent": "temporal",
+                    "data_source": "sql_result"
                 }
             )
 
@@ -2329,15 +2793,15 @@ class VisualizationService:
         # ====================================================
 
         if (
-            categorical_columns
+            result_categories
             and
-            numeric_columns
+            result_numeric
         ):
 
             return self._category_numeric_bar(
                 df,
-                categorical_columns[0],
-                numeric_columns[0],
+                result_categories[0],
+                result_numeric[0],
                 question
             )
 
@@ -2345,15 +2809,10 @@ class VisualizationService:
         # AUTOMATIC NUMERIC + NUMERIC
         # ====================================================
 
-        if len(numeric_columns) >= 2:
+        if len(result_numeric) >= 2:
 
-            x_column = (
-                numeric_columns[0]
-            )
-
-            y_column = (
-                numeric_columns[1]
-            )
+            x_column = result_numeric[0]
+            y_column = result_numeric[1]
 
             chart_df = (
                 df[
@@ -2382,7 +2841,6 @@ class VisualizationService:
                     ),
 
                 x=x_column,
-
                 y=y_column,
 
                 data=
@@ -2391,12 +2849,13 @@ class VisualizationService:
                     ),
 
                 reason=(
-                    "Two numerical columns are suitable "
-                    "for a scatter plot."
+                    "Two numerical query-result columns "
+                    "are suitable for a scatter plot."
                 ),
 
                 metadata={
-                    "intent": "relationship"
+                    "intent": "relationship",
+                    "data_source": "sql_result"
                 }
             )
 
@@ -2405,14 +2864,12 @@ class VisualizationService:
         # ====================================================
 
         if (
-            len(columns) == 1
+            len(df.columns) == 1
             and
-            categorical_columns
+            result_categories
         ):
 
-            column = (
-                categorical_columns[0]
-            )
+            column = result_categories[0]
 
             counts = (
                 df[column]
@@ -2443,7 +2900,6 @@ class VisualizationService:
                     ),
 
                 x=column,
-
                 y="count",
 
                 data=
@@ -2457,11 +2913,14 @@ class VisualizationService:
                 ),
 
                 metadata={
-                    "intent": "distribution"
+                    "intent": "distribution",
+                    "data_source": "sql_result"
                 }
             )
 
         return None
+    
+        
 
     # ========================================================
     # CATEGORY NUMERIC BAR
