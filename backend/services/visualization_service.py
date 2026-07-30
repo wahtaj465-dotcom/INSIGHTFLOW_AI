@@ -5,140 +5,86 @@ import pandas as pd
 
 
 class VisualizationService:
+    """
+    Deterministic visualization intelligence for InsightFlow.
+
+    Responsibilities:
+    1. Generate useful automated EDA visualizations.
+    2. Use semantic schema information when available.
+    3. Use EDA statistics when available.
+    4. Rank candidate charts by analytical usefulness.
+    5. Avoid identifiers, unsuitable text and redundant charts.
+    6. Generate visualization metadata for SQL/query results.
+    7. Require no LLM.
+    """
 
     def __init__(
         self,
         max_categories=15,
-        max_charts=10
+        max_charts=10,
+        max_scatter_points=500,
+        correlation_threshold=0.30
     ):
-
-        self.max_categories = (
-            max_categories
-        )
-
-        self.max_charts = (
-            max_charts
-        )
-
+        self.max_categories = max_categories
+        self.max_charts = max_charts
+        self.max_scatter_points = max_scatter_points
+        self.correlation_threshold = correlation_threshold
 
     # ========================================================
     # JSON SAFE VALUE
     # ========================================================
 
-    def _json_safe_value(
-        self,
-        value
-    ):
+    def _json_safe_value(self, value):
 
         if value is None:
-
             return None
 
-
         try:
-
-            if pd.isna(
-                value
-            ):
-
+            if pd.isna(value):
                 return None
-
-        except (
-            TypeError,
-            ValueError
-        ):
-
+        except (TypeError, ValueError):
             pass
 
+        if isinstance(value, pd.Timestamp):
+            return value.isoformat()
 
-        if isinstance(
-            value,
-            pd.Timestamp
-        ):
-
-            return (
-                value.isoformat()
-            )
-
-
-        if hasattr(
-            value,
-            "item"
-        ):
-
+        if hasattr(value, "item"):
             try:
-
-                return (
-                    value.item()
-                )
-
-            except (
-                ValueError,
-                TypeError,
-                AttributeError
-            ):
-
+                return value.item()
+            except (ValueError, TypeError, AttributeError):
                 pass
 
-
         return value
-
 
     # ========================================================
     # DATAFRAME -> RECORDS
     # ========================================================
 
-    def dataframe_to_records(
-        self,
-        df
-    ):
+    def dataframe_to_records(self, df):
 
         if df is None:
-
             return []
 
-
-        if not isinstance(
-            df,
-            pd.DataFrame
-        ):
-
+        if not isinstance(df, pd.DataFrame):
             raise TypeError(
                 "Input must be a Pandas DataFrame."
             )
 
-
         records = []
 
-
-        for record in (
-            df.to_dict(
-                orient="records"
-            )
-        ):
+        for record in df.to_dict(orient="records"):
 
             safe_record = {}
 
-            for key, value in (
-                record.items()
-            ):
+            for key, value in record.items():
 
-                safe_record[
-                    str(key)
-                ] = (
-                    self._json_safe_value(
-                        value
-                    )
+                safe_record[str(key)] = (
+                    self._json_safe_value(value)
                 )
 
-
-            records.append(
-                safe_record
-            )
-
+            records.append(safe_record)
 
         return records
-
 
     # ========================================================
     # CREATE CHART
@@ -157,76 +103,299 @@ class VisualizationService:
     ):
 
         chart = {
-
-            "chart_type":
-                chart_type,
-
-            "title":
-                title,
-
-            "x":
-                x,
-
-            "y":
-                y,
-
-            "data":
-                data,
-
-            "reason":
-                reason
+            "chart_type": chart_type,
+            "title": title,
+            "x": x,
+            "y": y,
+            "data": data,
+            "reason": reason
         }
 
-
         if color is not None:
-
-            chart[
-                "color"
-            ] = color
-
+            chart["color"] = color
 
         if metadata:
-
-            chart[
-                "metadata"
-            ] = metadata
-
+            chart["metadata"] = metadata
 
         return chart
 
+    # ========================================================
+    # TYPE HELPERS
+    # ========================================================
+
+    def _is_numeric(self, series):
+
+        return pd.api.types.is_numeric_dtype(
+            series
+        )
+
+    def _is_datetime(self, series):
+
+        return pd.api.types.is_datetime64_any_dtype(
+            series
+        )
+
+    def _semantic_type(
+        self,
+        schema,
+        column,
+        series
+    ):
+        """
+        Read semantic type from Schema Intelligence.
+
+        Falls back to Pandas dtype if semantic information
+        is unavailable.
+        """
+
+        info = schema.get(column, {})
+
+        detected_type = (
+            info.get("detected_type")
+            or info.get("semantic_type")
+            or info.get("type")
+        )
+
+        if detected_type:
+
+            normalized = (
+                str(detected_type)
+                .strip()
+                .lower()
+            )
+
+            aliases = {
+                "numeric": "Numerical",
+                "number": "Numerical",
+                "numerical": "Numerical",
+                "integer": "Numerical",
+                "float": "Numerical",
+
+                "category": "Categorical",
+                "categorical": "Categorical",
+
+                "datetime": "Datetime",
+                "date": "Datetime",
+                "timestamp": "Datetime",
+
+                "identifier": "Identifier",
+                "id": "Identifier",
+
+                "boolean": "Boolean",
+                "bool": "Boolean",
+
+                "text": "Text",
+                "string": "Text"
+            }
+
+            if normalized in aliases:
+                return aliases[normalized]
+
+            return str(detected_type)
+
+        if self._is_datetime(series):
+            return "Datetime"
+
+        if self._is_numeric(series):
+            return "Numerical"
+
+        return "Text"
 
     # ========================================================
-    # TYPE CHECKS
+    # COLUMN COLLECTION
     # ========================================================
 
-    def _is_numeric(
+    def _collect_columns(
+        self,
+        df,
+        schema
+    ):
+
+        groups = {
+            "Numerical": [],
+            "Categorical": [],
+            "Datetime": [],
+            "Boolean": [],
+            "Identifier": [],
+            "Text": []
+        }
+
+        for column in df.columns:
+
+            semantic_type = self._semantic_type(
+                schema,
+                column,
+                df[column]
+            )
+
+            if semantic_type not in groups:
+                semantic_type = "Text"
+
+            groups[semantic_type].append(
+                column
+            )
+
+        return groups
+
+    # ========================================================
+    # COLUMN QUALITY HELPERS
+    # ========================================================
+
+    def _valid_numeric_series(
         self,
         series
     ):
 
         return (
-            pd.api.types
-            .is_numeric_dtype(
-                series
+            pd.to_numeric(
+                series,
+                errors="coerce"
             )
+            .replace(
+                [float("inf"), float("-inf")],
+                pd.NA
+            )
+            .dropna()
         )
 
+    def _usable_category(
+        self,
+        series
+    ):
+        """
+        Decide whether a column is useful as a grouping
+        variable for visualization.
+        """
 
-    def _is_datetime(
+        non_null = series.dropna()
+
+        if non_null.empty:
+            return False
+
+        unique_count = non_null.nunique()
+
+        if unique_count < 2:
+            return False
+
+        if unique_count > self.max_categories:
+            return False
+
+        return True
+
+    def _numeric_has_variation(
         self,
         series
     ):
 
-        return (
-            pd.api.types
-            .is_datetime64_any_dtype(
-                series
+        numeric = self._valid_numeric_series(
+            series
+        )
+
+        if len(numeric) < 2:
+            return False
+
+        return numeric.nunique() > 1
+
+    # ========================================================
+    # CHART CANDIDATE
+    # ========================================================
+
+    def _candidate(
+        self,
+        chart,
+        score,
+        signature
+    ):
+
+        return {
+            "chart": chart,
+            "score": float(score),
+            "signature": signature
+        }
+
+    # ========================================================
+    # ADD CANDIDATE SAFELY
+    # ========================================================
+
+    def _add_candidate(
+        self,
+        candidates,
+        chart,
+        score,
+        signature
+    ):
+
+        if chart is None:
+            return
+
+        data = chart.get("data")
+
+        if data is None:
+            return
+
+        if isinstance(data, list) and not data:
+            return
+
+        candidates.append(
+            self._candidate(
+                chart,
+                score,
+                signature
             )
         )
 
+    # ========================================================
+    # RANK AND DEDUPLICATE
+    # ========================================================
+
+    def _select_best_candidates(
+        self,
+        candidates
+    ):
+
+        ordered = sorted(
+            candidates,
+            key=lambda item: item["score"],
+            reverse=True
+        )
+
+        selected = []
+        seen = set()
+
+        for candidate in ordered:
+
+            signature = candidate[
+                "signature"
+            ]
+
+            if signature in seen:
+                continue
+
+            chart = candidate[
+                "chart"
+            ]
+
+            metadata = chart.setdefault(
+                "metadata",
+                {}
+            )
+
+            metadata["priority_score"] = round(
+                candidate["score"],
+                3
+            )
+
+            selected.append(chart)
+
+            seen.add(signature)
+
+            if len(selected) >= self.max_charts:
+                break
+
+        return selected
 
     # ========================================================
-    # DETECT REQUESTED CHART TYPE
+    # REQUESTED CHART TYPE
     # ========================================================
 
     def _detect_requested_chart_type(
@@ -234,23 +403,27 @@ class VisualizationService:
         question
     ):
 
-        if not isinstance(
-            question,
-            str
-        ):
-
+        if not isinstance(question, str):
             return None
 
-
-        text = (
-            question
-            .strip()
-            .lower()
-        )
-
+        text = question.strip().lower()
 
         patterns = [
-
+            (
+                "stacked_bar",
+                [
+                    r"\bstacked\s*bar\b",
+                    r"\bstacked\s*bar\s*chart\b"
+                ]
+            ),
+            (
+                "heatmap",
+                [
+                    r"\bheat\s*map\b",
+                    r"\bheatmap\b",
+                    r"\bcorrelation\s*matrix\b"
+                ]
+            ),
             (
                 "box",
                 [
@@ -259,7 +432,6 @@ class VisualizationService:
                     r"\bbox\s*chart\b"
                 ]
             ),
-
             (
                 "violin",
                 [
@@ -267,14 +439,12 @@ class VisualizationService:
                     r"\bviolin\b"
                 ]
             ),
-
             (
                 "histogram",
                 [
                     r"\bhistogram\b"
                 ]
             ),
-
             (
                 "scatter",
                 [
@@ -283,16 +453,15 @@ class VisualizationService:
                     r"\bscatter\b"
                 ]
             ),
-
             (
                 "line",
                 [
                     r"\bline\s*chart\b",
                     r"\bline\s*plot\b",
-                    r"\btime\s*series\b"
+                    r"\btime\s*series\b",
+                    r"\btrend\b"
                 ]
             ),
-
             (
                 "bar",
                 [
@@ -302,10 +471,7 @@ class VisualizationService:
             )
         ]
 
-
-        for chart_type, expressions in (
-            patterns
-        ):
+        for chart_type, expressions in patterns:
 
             for expression in expressions:
 
@@ -313,303 +479,357 @@ class VisualizationService:
                     expression,
                     text
                 ):
-
                     return chart_type
-
 
         return None
 
-
     # ========================================================
-    # GENERATE EDA CHARTS
+    # EDA VISUALIZATION INTELLIGENCE
     # ========================================================
 
     def generate_eda_charts(
         self,
         df,
-        schema
+        schema,
+        eda_results=None
     ):
+        """
+        Generate ranked deterministic EDA visualizations.
 
-        if not isinstance(
-            df,
-            pd.DataFrame
-        ):
+        eda_results is optional so this remains backward
+        compatible with existing workflow calls.
+
+        Candidate families:
+        - categorical distributions
+        - numeric distributions
+        - outlier/spread plots
+        - numeric relationships
+        - correlation heatmap
+        - category/numeric comparison
+        - categorical composition
+        - temporal trends
+        """
+
+        if not isinstance(df, pd.DataFrame):
 
             raise TypeError(
                 "df must be a Pandas DataFrame."
             )
 
-
         if df.empty:
-
             return []
 
-
-        if not isinstance(
-            schema,
-            dict
-        ):
+        if not isinstance(schema, dict):
 
             raise TypeError(
                 "schema must be a dictionary."
             )
 
+        if eda_results is None:
+            eda_results = {}
 
-        charts = []
+        if not isinstance(eda_results, dict):
 
-        numerical_columns = []
-        categorical_columns = []
-        datetime_columns = []
-
-
-        for column, info in (
-            schema.items()
-        ):
-
-            if column not in df.columns:
-
-                continue
-
-
-            detected_type = (
-                info.get(
-                    "detected_type"
-                )
+            raise TypeError(
+                "eda_results must be a dictionary."
             )
 
+        groups = self._collect_columns(
+            df,
+            schema
+        )
 
-            if detected_type == "Numerical":
+        numerical_columns = groups[
+            "Numerical"
+        ]
 
-                numerical_columns.append(
-                    column
-                )
+        categorical_columns = (
+            groups["Categorical"]
+            +
+            groups["Boolean"]
+        )
 
-            elif detected_type == "Categorical":
+        datetime_columns = groups[
+            "Datetime"
+        ]
 
-                categorical_columns.append(
-                    column
-                )
+        # IDs and free text intentionally excluded
+        # from automatic EDA charts.
 
-            elif detected_type == "Datetime":
+        candidates = []
 
-                datetime_columns.append(
-                    column
-                )
-
-
-        # ----------------------------------------------------
-        # CATEGORICAL DISTRIBUTIONS
-        # ----------------------------------------------------
+        # ====================================================
+        # 1. CATEGORY DISTRIBUTIONS
+        # ====================================================
 
         for column in categorical_columns:
+
+            if not self._usable_category(
+                df[column]
+            ):
+                continue
 
             counts = (
                 df[column]
                 .fillna("Missing")
                 .astype(str)
                 .value_counts()
-                .head(
-                    self.max_categories
-                )
+                .head(self.max_categories)
                 .reset_index()
             )
 
-
             counts.columns = [
-
                 column,
-
                 "count"
             ]
 
-
-            charts.append(
-
-                self._create_chart(
-
-                    chart_type=
-                        "bar",
-
-                    title=(
-                        f"{self._pretty_name(column)} "
-                        "Distribution"
-                    ),
-
-                    x=
-                        column,
-
-                    y=
-                        "count",
-
-                    data=
-                        self.dataframe_to_records(
-                            counts
-                        ),
-
-                    reason=(
-                        "Compare frequency across "
-                        f"{column} categories."
-                    )
+            unique_count = (
+                df[column]
+                .nunique(
+                    dropna=True
                 )
             )
 
+            score = 58
 
-            if (
-                len(charts)
-                >=
-                self.max_charts
-            ):
+            if unique_count <= 8:
+                score += 8
 
-                return charts
+            chart = self._create_chart(
+                chart_type="bar",
+                title=(
+                    f"{self._pretty_name(column)} "
+                    "Distribution"
+                ),
+                x=column,
+                y="count",
+                data=self.dataframe_to_records(
+                    counts
+                ),
+                reason=(
+                    "Shows the frequency and dominance "
+                    f"of {column} categories."
+                ),
+                metadata={
+                    "intent": "distribution",
+                    "semantic_type": "Categorical",
+                    "category_count": int(
+                        unique_count
+                    )
+                }
+            )
 
+            self._add_candidate(
+                candidates,
+                chart,
+                score,
+                (
+                    "category_distribution",
+                    column
+                )
+            )
 
-        # ----------------------------------------------------
-        # NUMERIC HISTOGRAMS
-        # ----------------------------------------------------
+        # ====================================================
+        # 2. NUMERIC DISTRIBUTIONS
+        # ====================================================
 
         for column in numerical_columns:
+
+            if not self._numeric_has_variation(
+                df[column]
+            ):
+                continue
 
             histogram = (
                 self._create_histogram_data(
-
-                    df[
-                        column
-                    ],
-
+                    df[column],
                     column
                 )
             )
 
+            chart = self._create_chart(
+                chart_type="histogram",
+                title=(
+                    f"{self._pretty_name(column)} "
+                    "Distribution"
+                ),
+                x="bin",
+                y="frequency",
+                data=histogram,
+                reason=(
+                    "Shows the shape, concentration and "
+                    f"spread of {column}."
+                ),
+                metadata={
+                    "intent": "distribution",
+                    "metric": column
+                }
+            )
 
-            if histogram:
-
-                charts.append(
-
-                    self._create_chart(
-
-                        chart_type=
-                            "histogram",
-
-                        title=(
-                            f"{self._pretty_name(column)} "
-                            "Distribution"
-                        ),
-
-                        x=
-                            "bin",
-
-                        y=
-                            "frequency",
-
-                        data=
-                            histogram,
-
-                        reason=(
-                            "Analyze the distribution "
-                            f"of {column}."
-                        )
-                    )
+            self._add_candidate(
+                candidates,
+                chart,
+                52,
+                (
+                    "numeric_distribution",
+                    column
                 )
+            )
 
-
-            if (
-                len(charts)
-                >=
-                self.max_charts
-            ):
-
-                return charts
-
-
-        # ----------------------------------------------------
-        # BOX PLOTS
-        # ----------------------------------------------------
+        # ====================================================
+        # 3. NUMERIC OUTLIER / SPREAD
+        # ====================================================
 
         for column in numerical_columns:
 
+            if not self._numeric_has_variation(
+                df[column]
+            ):
+                continue
+
             box_data = (
                 self._create_boxplot_data(
-
-                    df[
-                        column
-                    ],
-
+                    df[column],
                     column
                 )
             )
 
+            if not box_data:
+                continue
 
-            if box_data:
+            outlier_count = len(
+                box_data[0].get(
+                    "outliers",
+                    []
+                )
+            )
 
-                charts.append(
+            score = 45
 
-                    self._create_chart(
-
-                        chart_type=
-                            "box",
-
-                        title=(
-                            f"{self._pretty_name(column)} "
-                            "Spread"
-                        ),
-
-                        x=
-                            column,
-
-                        y=
-                            column,
-
-                        data=
-                            box_data,
-
-                        reason=(
-                            "Inspect spread and potential "
-                            f"outliers in {column}."
-                        )
-                    )
+            if outlier_count:
+                score += min(
+                    20,
+                    outlier_count / 5
                 )
 
+            chart = self._create_chart(
+                chart_type="box",
+                title=(
+                    f"{self._pretty_name(column)} "
+                    "Spread & Outliers"
+                ),
+                x=column,
+                y=column,
+                data=box_data,
+                reason=(
+                    "Shows quartiles, spread and "
+                    f"potential outliers in {column}."
+                ),
+                metadata={
+                    "intent": "outlier",
+                    "metric": column,
+                    "outlier_count": outlier_count
+                }
+            )
 
-            if (
-                len(charts)
-                >=
-                self.max_charts
-            ):
+            self._add_candidate(
+                candidates,
+                chart,
+                score,
+                (
+                    "numeric_box",
+                    column
+                )
+            )
 
-                return charts
+        # ====================================================
+        # 4. CORRELATION MATRIX
+        # ====================================================
 
-
-        # ----------------------------------------------------
-        # SCATTER
-        # ----------------------------------------------------
-
-        for i in range(
-            len(
+        correlation_df = (
+            self._prepare_numeric_dataframe(
+                df,
                 numerical_columns
             )
+        )
+
+        if correlation_df.shape[1] >= 2:
+
+            correlation_matrix = (
+                correlation_df.corr()
+            )
+
+            heatmap_data = (
+                self._correlation_records(
+                    correlation_matrix
+                )
+            )
+
+            strongest = (
+                self._strongest_correlation(
+                    correlation_matrix
+                )
+            )
+
+            score = 72
+
+            if strongest is not None:
+
+                score += (
+                    abs(
+                        strongest["correlation"]
+                    )
+                    * 15
+                )
+
+            chart = self._create_chart(
+                chart_type="heatmap",
+                title="Numerical Correlation Heatmap",
+                x="x",
+                y="y",
+                data=heatmap_data,
+                reason=(
+                    "Compares relationships across "
+                    "numerical variables."
+                ),
+                metadata={
+                    "intent": "correlation",
+                    "value": "correlation",
+                    "strongest_relationship": strongest
+                }
+            )
+
+            self._add_candidate(
+                candidates,
+                chart,
+                score,
+                ("correlation_heatmap",)
+            )
+
+        # ====================================================
+        # 5. NUMERIC RELATIONSHIPS
+        # ====================================================
+
+        numeric_pairs = []
+
+        for i in range(
+            len(numerical_columns)
         ):
 
             for j in range(
                 i + 1,
-                len(
-                    numerical_columns
-                )
+                len(numerical_columns)
             ):
 
                 x_column = (
-                    numerical_columns[
-                        i
-                    ]
+                    numerical_columns[i]
                 )
 
                 y_column = (
-                    numerical_columns[
-                        j
-                    ]
+                    numerical_columns[j]
                 )
 
-
-                scatter_df = (
+                pair_df = (
                     df[
                         [
                             x_column,
@@ -619,191 +839,796 @@ class VisualizationService:
                     .copy()
                 )
 
-
-                scatter_df[
-                    x_column
-                ] = pd.to_numeric(
-
-                    scatter_df[
-                        x_column
-                    ],
-
-                    errors=
-                        "coerce"
-                )
-
-
-                scatter_df[
-                    y_column
-                ] = pd.to_numeric(
-
-                    scatter_df[
-                        y_column
-                    ],
-
-                    errors=
-                        "coerce"
-                )
-
-
-                scatter_df = (
-                    scatter_df
-                    .dropna()
-                    .head(
-                        500
+                pair_df[x_column] = (
+                    pd.to_numeric(
+                        pair_df[x_column],
+                        errors="coerce"
                     )
                 )
 
+                pair_df[y_column] = (
+                    pd.to_numeric(
+                        pair_df[y_column],
+                        errors="coerce"
+                    )
+                )
 
-                if scatter_df.empty:
+                pair_df = (
+                    pair_df
+                    .dropna()
+                )
 
+                if len(pair_df) < 3:
                     continue
 
+                if (
+                    pair_df[x_column].nunique() < 2
+                    or
+                    pair_df[y_column].nunique() < 2
+                ):
+                    continue
 
-                charts.append(
-
-                    self._create_chart(
-
-                        chart_type=
-                            "scatter",
-
-                        title=(
-                            f"{self._pretty_name(y_column)} "
-                            "vs "
-                            f"{self._pretty_name(x_column)}"
-                        ),
-
-                        x=
+                correlation = (
+                    pair_df[
+                        [
                             x_column,
+                            y_column
+                        ]
+                    ]
+                    .corr()
+                    .iloc[0, 1]
+                )
 
-                        y=
-                            y_column,
+                if pd.isna(correlation):
+                    continue
 
-                        data=
-                            self.dataframe_to_records(
-                                scatter_df
-                            ),
-
-                        reason=(
-                            "Explore the relationship "
-                            f"between {x_column} "
-                            f"and {y_column}."
-                        )
+                numeric_pairs.append(
+                    (
+                        abs(
+                            float(correlation)
+                        ),
+                        float(correlation),
+                        x_column,
+                        y_column,
+                        pair_df
                     )
                 )
 
+        numeric_pairs.sort(
+            key=lambda item: item[0],
+            reverse=True
+        )
 
-                if (
-                    len(charts)
-                    >=
-                    self.max_charts
-                ):
+        # Only generate strongest relationships.
+        # This prevents scatter plots from dominating.
 
-                    return charts
+        for (
+            absolute_correlation,
+            correlation,
+            x_column,
+            y_column,
+            pair_df
+        ) in numeric_pairs[:3]:
 
+            if (
+                absolute_correlation
+                <
+                self.correlation_threshold
+            ):
+                continue
 
-        # ----------------------------------------------------
-        # TIME SERIES
-        # ----------------------------------------------------
+            scatter_df = (
+                pair_df
+                .head(
+                    self.max_scatter_points
+                )
+            )
 
-        for date_column in datetime_columns:
+            score = (
+                65
+                +
+                absolute_correlation * 25
+            )
 
-            for numeric_column in numerical_columns:
+            chart = self._create_chart(
+                chart_type="scatter",
+                title=(
+                    f"{self._pretty_name(y_column)} "
+                    "vs "
+                    f"{self._pretty_name(x_column)}"
+                ),
+                x=x_column,
+                y=y_column,
+                data=self.dataframe_to_records(
+                    scatter_df
+                ),
+                reason=(
+                    "Shows a numerical relationship "
+                    f"with correlation {correlation:.2f}."
+                ),
+                metadata={
+                    "intent": "relationship",
+                    "correlation": round(
+                        correlation,
+                        4
+                    ),
+                    "sample_size": len(
+                        scatter_df
+                    )
+                }
+            )
 
-                line_df = (
+            self._add_candidate(
+                candidates,
+                chart,
+                score,
+                (
+                    "scatter",
+                    x_column,
+                    y_column
+                )
+            )
+
+        # ====================================================
+        # 6. CATEGORY + NUMERIC RELATIONSHIPS
+        # ====================================================
+
+        for category_column in (
+            categorical_columns
+        ):
+
+            if not self._usable_category(
+                df[category_column]
+            ):
+                continue
+
+            for numeric_column in (
+                numerical_columns
+            ):
+
+                relationship_df = (
                     df[
                         [
-                            date_column,
+                            category_column,
                             numeric_column
                         ]
                     ]
                     .copy()
                 )
 
-
-                line_df[
-                    date_column
-                ] = pd.to_datetime(
-
-                    line_df[
-                        date_column
-                    ],
-
-                    errors=
-                        "coerce"
-                )
-
-
-                line_df[
+                relationship_df[
                     numeric_column
                 ] = pd.to_numeric(
-
-                    line_df[
+                    relationship_df[
                         numeric_column
                     ],
-
-                    errors=
-                        "coerce"
+                    errors="coerce"
                 )
 
+                relationship_df = (
+                    relationship_df
+                    .dropna(
+                        subset=[
+                            numeric_column
+                        ]
+                    )
+                )
+
+                if relationship_df.empty:
+                    continue
+
+                relationship_df[
+                    category_column
+                ] = (
+                    relationship_df[
+                        category_column
+                    ]
+                    .fillna("Missing")
+                    .astype(str)
+                )
+
+                grouped = (
+                    relationship_df
+                    .groupby(
+                        category_column,
+                        dropna=False
+                    )[
+                        numeric_column
+                    ]
+                    .agg(
+                        mean="mean",
+                        median="median",
+                        count="count"
+                    )
+                    .reset_index()
+                )
+
+                if len(grouped) < 2:
+                    continue
+
+                if len(grouped) > self.max_categories:
+                    continue
+
+                mean_variation = (
+                    self._group_mean_variation(
+                        grouped["mean"]
+                    )
+                )
+
+                score = (
+                    68
+                    +
+                    min(
+                        15,
+                        mean_variation * 15
+                    )
+                )
+
+                chart = self._create_chart(
+                    chart_type="bar",
+                    title=(
+                        f"Average "
+                        f"{self._pretty_name(numeric_column)} "
+                        "by "
+                        f"{self._pretty_name(category_column)}"
+                    ),
+                    x=category_column,
+                    y="mean",
+                    data=self.dataframe_to_records(
+                        grouped
+                    ),
+                    reason=(
+                        "Compares the average "
+                        f"{numeric_column} across "
+                        f"{category_column} groups."
+                    ),
+                    metadata={
+                        "intent": "comparison",
+                        "aggregation": "mean",
+                        "metric": numeric_column,
+                        "category": category_column,
+                        "mean_variation": round(
+                            mean_variation,
+                            4
+                        )
+                    }
+                )
+
+                self._add_candidate(
+                    candidates,
+                    chart,
+                    score,
+                    (
+                        "category_numeric",
+                        category_column,
+                        numeric_column
+                    )
+                )
+
+        # ====================================================
+        # 7. GROUPED BOX PLOTS
+        # ====================================================
+
+        for category_column in (
+            categorical_columns
+        ):
+
+            if not self._usable_category(
+                df[category_column]
+            ):
+                continue
+
+            for numeric_column in (
+                numerical_columns
+            ):
+
+                chart_df = (
+                    df[
+                        [
+                            category_column,
+                            numeric_column
+                        ]
+                    ]
+                    .copy()
+                )
+
+                chart_df[
+                    numeric_column
+                ] = pd.to_numeric(
+                    chart_df[
+                        numeric_column
+                    ],
+                    errors="coerce"
+                )
+
+                chart_df = (
+                    chart_df.dropna(
+                        subset=[
+                            numeric_column
+                        ]
+                    )
+                )
+
+                if chart_df.empty:
+                    continue
+
+                chart_df[
+                    category_column
+                ] = (
+                    chart_df[
+                        category_column
+                    ]
+                    .fillna("Missing")
+                    .astype(str)
+                )
+
+                if (
+                    chart_df[
+                        category_column
+                    ]
+                    .nunique()
+                    < 2
+                ):
+                    continue
+
+                chart = self._create_chart(
+                    chart_type="box",
+                    title=(
+                        f"{self._pretty_name(numeric_column)} "
+                        "by "
+                        f"{self._pretty_name(category_column)}"
+                    ),
+                    x=category_column,
+                    y=numeric_column,
+                    data=self.dataframe_to_records(
+                        chart_df
+                    ),
+                    reason=(
+                        "Compares numerical distributions "
+                        f"of {numeric_column} across "
+                        f"{category_column} groups."
+                    ),
+                    metadata={
+                        "intent": "group_distribution",
+                        "grouped": True,
+                        "category": category_column,
+                        "metric": numeric_column
+                    }
+                )
+
+                self._add_candidate(
+                    candidates,
+                    chart,
+                    64,
+                    (
+                        "grouped_box",
+                        category_column,
+                        numeric_column
+                    )
+                )
+
+        # ====================================================
+        # 8. CATEGORY + CATEGORY COMPOSITION
+        # ====================================================
+
+        usable_categories = [
+
+            column
+
+            for column in categorical_columns
+
+            if self._usable_category(
+                df[column]
+            )
+        ]
+
+        for i in range(
+            len(usable_categories)
+        ):
+
+            for j in range(
+                i + 1,
+                len(usable_categories)
+            ):
+
+                x_column = (
+                    usable_categories[i]
+                )
+
+                color_column = (
+                    usable_categories[j]
+                )
+
+                cross = (
+                    df[
+                        [
+                            x_column,
+                            color_column
+                        ]
+                    ]
+                    .copy()
+                )
+
+                cross[x_column] = (
+                    cross[x_column]
+                    .fillna("Missing")
+                    .astype(str)
+                )
+
+                cross[color_column] = (
+                    cross[color_column]
+                    .fillna("Missing")
+                    .astype(str)
+                )
+
+                cross = (
+                    cross
+                    .groupby(
+                        [
+                            x_column,
+                            color_column
+                        ]
+                    )
+                    .size()
+                    .reset_index(
+                        name="count"
+                    )
+                )
+
+                if cross.empty:
+                    continue
+
+                chart = self._create_chart(
+                    chart_type="stacked_bar",
+                    title=(
+                        f"{self._pretty_name(color_column)} "
+                        "by "
+                        f"{self._pretty_name(x_column)}"
+                    ),
+                    x=x_column,
+                    y="count",
+                    color=color_column,
+                    data=self.dataframe_to_records(
+                        cross
+                    ),
+                    reason=(
+                        "Shows how "
+                        f"{color_column} composition varies "
+                        f"across {x_column} categories."
+                    ),
+                    metadata={
+                        "intent": "composition",
+                        "aggregation": "count",
+                        "category": x_column,
+                        "color_group": color_column
+                    }
+                )
+
+                self._add_candidate(
+                    candidates,
+                    chart,
+                    66,
+                    (
+                        "stacked_bar",
+                        x_column,
+                        color_column
+                    )
+                )
+
+        # ====================================================
+        # 9. TEMPORAL TRENDS
+        # ====================================================
+
+        for date_column in datetime_columns:
+
+            converted_dates = (
+                self._safe_datetime_series(
+                    df[date_column]
+                )
+            )
+
+            if converted_dates.notna().sum() < 2:
+                continue
+
+            for numeric_column in (
+                numerical_columns
+            ):
+
+                line_df = pd.DataFrame({
+                    date_column:
+                        converted_dates,
+
+                    numeric_column:
+                        pd.to_numeric(
+                            df[numeric_column],
+                            errors="coerce"
+                        )
+                })
 
                 line_df = (
                     line_df
                     .dropna()
+                )
+
+                if line_df.empty:
+                    continue
+
+                if (
+                    line_df[
+                        date_column
+                    ]
+                    .nunique()
+                    < 2
+                ):
+                    continue
+
+                # Aggregate duplicate timestamps rather than
+                # plotting hundreds of overlapping points.
+
+                line_df = (
+                    line_df
+                    .groupby(
+                        date_column,
+                        as_index=False
+                    )[
+                        numeric_column
+                    ]
+                    .mean()
                     .sort_values(
                         date_column
                     )
                 )
 
+                chart = self._create_chart(
+                    chart_type="line",
+                    title=(
+                        f"{self._pretty_name(numeric_column)} "
+                        "Over Time"
+                    ),
+                    x=date_column,
+                    y=numeric_column,
+                    data=self.dataframe_to_records(
+                        line_df
+                    ),
+                    reason=(
+                        "Shows how "
+                        f"{numeric_column} changes across "
+                        f"{date_column}."
+                    ),
+                    metadata={
+                        "intent": "temporal",
+                        "aggregation": "mean",
+                        "date_column": date_column,
+                        "metric": numeric_column
+                    }
+                )
 
-                if line_df.empty:
-
-                    continue
-
-
-                charts.append(
-
-                    self._create_chart(
-
-                        chart_type=
-                            "line",
-
-                        title=(
-                            f"{self._pretty_name(numeric_column)} "
-                            "Over Time"
-                        ),
-
-                        x=
-                            date_column,
-
-                        y=
-                            numeric_column,
-
-                        data=
-                            self.dataframe_to_records(
-                                line_df
-                            ),
-
-                        reason=(
-                            f"Analyze how "
-                            f"{numeric_column} "
-                            "changes over time."
-                        )
+                self._add_candidate(
+                    candidates,
+                    chart,
+                    82,
+                    (
+                        "time_series",
+                        date_column,
+                        numeric_column
                     )
                 )
 
+        # ====================================================
+        # FINAL RANKING
+        # ====================================================
+
+        return self._select_best_candidates(
+            candidates
+        )
+
+    # ========================================================
+    # SAFE DATETIME CONVERSION
+    # ========================================================
+
+    def _safe_datetime_series(
+        self,
+        series
+    ):
+        """
+        Convert date values without blindly asking Pandas to
+        infer every arbitrary object column.
+
+        The Schema Agent should already have identified this
+        column as Datetime.
+        """
+
+        if self._is_datetime(series):
+
+            return pd.to_datetime(
+                series,
+                errors="coerce"
+            )
+
+        text = (
+            series
+            .astype("string")
+            .str.strip()
+        )
+
+        return pd.to_datetime(
+            text,
+            errors="coerce"
+        )
+
+    # ========================================================
+    # PREPARE NUMERIC DATAFRAME
+    # ========================================================
+
+    def _prepare_numeric_dataframe(
+        self,
+        df,
+        columns
+    ):
+
+        numeric_df = pd.DataFrame(
+            index=df.index
+        )
+
+        for column in columns:
+
+            converted = pd.to_numeric(
+                df[column],
+                errors="coerce"
+            )
+
+            if converted.notna().sum() < 2:
+                continue
+
+            if converted.nunique(
+                dropna=True
+            ) < 2:
+                continue
+
+            numeric_df[column] = (
+                converted
+            )
+
+        return numeric_df
+
+    # ========================================================
+    # CORRELATION RECORDS
+    # ========================================================
+
+    def _correlation_records(
+        self,
+        matrix
+    ):
+
+        records = []
+
+        for row_column in matrix.index:
+
+            for column in matrix.columns:
+
+                value = matrix.loc[
+                    row_column,
+                    column
+                ]
+
+                if pd.isna(value):
+                    continue
+
+                records.append({
+                    "x": str(column),
+                    "y": str(row_column),
+                    "correlation": round(
+                        float(value),
+                        4
+                    )
+                })
+
+        return records
+
+    # ========================================================
+    # STRONGEST CORRELATION
+    # ========================================================
+
+    def _strongest_correlation(
+        self,
+        matrix
+    ):
+
+        if matrix.shape[1] < 2:
+            return None
+
+        best = None
+
+        columns = list(
+            matrix.columns
+        )
+
+        for i in range(
+            len(columns)
+        ):
+
+            for j in range(
+                i + 1,
+                len(columns)
+            ):
+
+                value = matrix.loc[
+                    columns[i],
+                    columns[j]
+                ]
+
+                if pd.isna(value):
+                    continue
+
+                value = float(value)
 
                 if (
-                    len(charts)
-                    >=
-                    self.max_charts
+                    best is None
+                    or
+                    abs(value)
+                    >
+                    abs(
+                        best[
+                            "correlation"
+                        ]
+                    )
                 ):
 
-                    return charts
+                    best = {
+                        "x": columns[i],
+                        "y": columns[j],
+                        "correlation": round(
+                            value,
+                            4
+                        )
+                    }
 
+        return best
 
-        return charts
+    # ========================================================
+    # GROUP MEAN VARIATION
+    # ========================================================
 
+    def _group_mean_variation(
+        self,
+        means
+    ):
+
+        numeric = (
+            pd.to_numeric(
+                means,
+                errors="coerce"
+            )
+            .dropna()
+        )
+
+        if len(numeric) < 2:
+            return 0.0
+
+        average = abs(
+            float(
+                numeric.mean()
+            )
+        )
+
+        spread = float(
+            numeric.max()
+            -
+            numeric.min()
+        )
+
+        if average <= 1e-12:
+            return min(
+                1.0,
+                abs(spread)
+            )
+
+        return min(
+            1.0,
+            abs(spread)
+            /
+            average
+        )
 
     # ========================================================
     # RESULT CHART
@@ -814,36 +1639,31 @@ class VisualizationService:
         df,
         question=None
     ):
+        """
+        Generate visualization metadata from SQL result.
+
+        Explicit user visualization requests take priority.
+        """
 
         if df is None:
-
             return None
 
-
-        if not isinstance(
-            df,
-            pd.DataFrame
-        ):
+        if not isinstance(df, pd.DataFrame):
 
             raise TypeError(
-                "SQL result must be a "
-                "Pandas DataFrame."
+                "SQL result must be a Pandas DataFrame."
             )
 
-
         if df.empty:
-
             return None
-
 
         columns = list(
             df.columns
         )
 
-
-        # ----------------------------------------------------
+        # ====================================================
         # KPI
-        # ----------------------------------------------------
+        # ====================================================
 
         if (
             len(df) == 1
@@ -852,23 +1672,16 @@ class VisualizationService:
         ):
 
             return {
-
-                "chart_type":
-                    "kpi",
+                "chart_type": "kpi",
 
                 "title":
                     self._pretty_name(
-                        columns[
-                            0
-                        ]
+                        columns[0]
                     ),
 
                 "value":
                     self._json_safe_value(
-                        df.iloc[
-                            0,
-                            0
-                        ]
+                        df.iloc[0, 0]
                     ),
 
                 "data":
@@ -880,39 +1693,34 @@ class VisualizationService:
                     (
                         "Single-value query result "
                         "is best displayed as a KPI."
-                    )
+                    ),
+
+                "metadata": {
+                    "intent": "summary"
+                }
             }
 
-
         numeric_columns = []
-
         datetime_columns = []
-
         categorical_columns = []
-
 
         for column in columns:
 
-            series = (
-                df[
-                    column
-                ]
-            )
+            series = df[column]
 
-
-            if self._is_numeric(
-                series
-            ):
-
-                numeric_columns.append(
-                    column
-                )
-
-            elif self._is_datetime(
+            if self._is_datetime(
                 series
             ):
 
                 datetime_columns.append(
+                    column
+                )
+
+            elif self._is_numeric(
+                series
+            ):
+
+                numeric_columns.append(
                     column
                 )
 
@@ -922,16 +1730,14 @@ class VisualizationService:
                     column
                 )
 
-
         requested_type = (
             self._detect_requested_chart_type(
                 question
             )
         )
 
-
         # ====================================================
-        # EXPLICIT BOX / VIOLIN REQUEST
+        # EXPLICIT BOX / VIOLIN
         # ====================================================
 
         if (
@@ -945,44 +1751,30 @@ class VisualizationService:
         ):
 
             numeric_column = (
-                numeric_columns[
-                    -1
-                ]
+                numeric_columns[-1]
             )
-
 
             if categorical_columns:
 
                 category_column = (
-                    categorical_columns[
-                        0
-                    ]
+                    categorical_columns[0]
                 )
 
                 color_column = None
 
-
                 if (
-                    len(
-                        categorical_columns
-                    )
+                    len(categorical_columns)
                     >= 2
                 ):
 
                     color_column = (
-                        categorical_columns[
-                            1
-                        ]
+                        categorical_columns[1]
                     )
 
-
                 selected_columns = [
-
                     category_column,
-
                     numeric_column
                 ]
-
 
                 if color_column:
 
@@ -991,7 +1783,6 @@ class VisualizationService:
                         color_column
                     )
 
-
                 chart_df = (
                     df[
                         selected_columns
@@ -999,19 +1790,14 @@ class VisualizationService:
                     .copy()
                 )
 
-
                 chart_df[
                     numeric_column
                 ] = pd.to_numeric(
-
                     chart_df[
                         numeric_column
                     ],
-
-                    errors=
-                        "coerce"
+                    errors="coerce"
                 )
-
 
                 chart_df[
                     category_column
@@ -1019,14 +1805,9 @@ class VisualizationService:
                     chart_df[
                         category_column
                     ]
-                    .fillna(
-                        "Missing"
-                    )
-                    .astype(
-                        str
-                    )
+                    .fillna("Missing")
+                    .astype(str)
                 )
-
 
                 if color_column:
 
@@ -1036,14 +1817,9 @@ class VisualizationService:
                         chart_df[
                             color_column
                         ]
-                        .fillna(
-                            "Missing"
-                        )
-                        .astype(
-                            str
-                        )
+                        .fillna("Missing")
+                        .astype(str)
                     )
-
 
                 chart_df = (
                     chart_df.dropna(
@@ -1053,205 +1829,148 @@ class VisualizationService:
                     )
                 )
 
-
                 if not chart_df.empty:
 
-                    return (
-                        self._create_chart(
+                    return self._create_chart(
+                        chart_type=requested_type,
 
-                            chart_type=
-                                requested_type,
-
-                            title=
-                                self._question_title(
-
-                                    question,
-
-                                    fallback=(
-                                        f"{self._pretty_name(numeric_column)} "
-                                        "by "
-                                        f"{self._pretty_name(category_column)}"
-                                    )
-                                ),
-
-                            x=
-                                category_column,
-
-                            y=
-                                numeric_column,
-
-                            color=
-                                color_column,
-
-                            data=
-                                self.dataframe_to_records(
-                                    chart_df
-                                ),
-
-                            reason=(
-                                "The user explicitly "
-                                f"requested a {requested_type} "
-                                "plot."
+                        title=
+                            self._question_title(
+                                question,
+                                fallback=(
+                                    f"{self._pretty_name(numeric_column)} "
+                                    "by "
+                                    f"{self._pretty_name(category_column)}"
+                                )
                             ),
 
-                            metadata={
+                        x=category_column,
 
-                                "grouped":
-                                    True,
+                        y=numeric_column,
 
-                                "category":
-                                    category_column,
+                        color=color_column,
 
-                                "metric":
-                                    numeric_column,
+                        data=
+                            self.dataframe_to_records(
+                                chart_df
+                            ),
 
-                                "color_group":
-                                    color_column
-                            }
-                        )
+                        reason=(
+                            "The user explicitly requested "
+                            f"a {requested_type} plot."
+                        ),
+
+                        metadata={
+                            "intent":
+                                "group_distribution",
+
+                            "grouped":
+                                True,
+
+                            "category":
+                                category_column,
+
+                            "metric":
+                                numeric_column,
+
+                            "color_group":
+                                color_column
+                        }
                     )
-
-
-            # Numeric-only box plot
 
             box_data = (
                 self._create_boxplot_data(
-
-                    df[
-                        numeric_column
-                    ],
-
+                    df[numeric_column],
                     numeric_column
                 )
             )
 
+            return self._create_chart(
+                chart_type="box",
 
-            return (
-                self._create_chart(
+                title=
+                    self._question_title(
+                        question,
+                        fallback=(
+                            f"{self._pretty_name(numeric_column)} "
+                            "Distribution"
+                        )
+                    ),
 
-                    chart_type=
-                        "box",
+                x=numeric_column,
 
-                    title=
-                        self._question_title(
+                y=numeric_column,
 
-                            question,
+                data=box_data,
 
-                            fallback=(
-                                f"{self._pretty_name(numeric_column)} "
-                                "Distribution"
-                            )
-                        ),
+                reason=(
+                    "The user explicitly requested "
+                    "a box plot."
+                ),
 
-                    x=
-                        numeric_column,
-
-                    y=
-                        numeric_column,
-
-                    data=
-                        box_data,
-
-                    reason=(
-                        "The user explicitly "
-                        "requested a box plot."
-                    )
-                )
+                metadata={
+                    "intent": "distribution"
+                }
             )
-
 
         # ====================================================
         # EXPLICIT HISTOGRAM
         # ====================================================
 
         if (
-            requested_type
-            ==
-            "histogram"
-            and
-            numeric_columns
+            requested_type == "histogram"
+            and numeric_columns
         ):
 
-            column = (
-                numeric_columns[
-                    0
-                ]
-            )
-
+            column = numeric_columns[0]
 
             histogram = (
                 self._create_histogram_data(
-
-                    df[
-                        column
-                    ],
-
+                    df[column],
                     column
                 )
             )
 
+            return self._create_chart(
+                chart_type="histogram",
 
-            return (
-                self._create_chart(
+                title=
+                    self._question_title(
+                        question,
+                        fallback=(
+                            f"{self._pretty_name(column)} "
+                            "Distribution"
+                        )
+                    ),
 
-                    chart_type=
-                        "histogram",
+                x="bin",
 
-                    title=
-                        self._question_title(
+                y="frequency",
 
-                            question,
+                data=histogram,
 
-                            fallback=(
-                                f"{self._pretty_name(column)} "
-                                "Distribution"
-                            )
-                        ),
+                reason=(
+                    "The user explicitly requested "
+                    "a histogram."
+                ),
 
-                    x=
-                        "bin",
-
-                    y=
-                        "frequency",
-
-                    data=
-                        histogram,
-
-                    reason=(
-                        "The user explicitly "
-                        "requested a histogram."
-                    )
-                )
+                metadata={
+                    "intent": "distribution"
+                }
             )
-
 
         # ====================================================
         # EXPLICIT SCATTER
         # ====================================================
 
         if (
-            requested_type
-            ==
-            "scatter"
+            requested_type == "scatter"
             and
-            len(
-                numeric_columns
-            )
-            >= 2
+            len(numeric_columns) >= 2
         ):
 
-            x_column = (
-                numeric_columns[
-                    0
-                ]
-            )
-
-            y_column = (
-                numeric_columns[
-                    1
-                ]
-            )
-
+            x_column = numeric_columns[0]
+            y_column = numeric_columns[1]
 
             chart_df = (
                 df[
@@ -1262,56 +1981,191 @@ class VisualizationService:
                 ]
                 .dropna()
                 .head(
-                    500
+                    self.max_scatter_points
                 )
             )
 
+            return self._create_chart(
+                chart_type="scatter",
 
-            return (
-                self._create_chart(
+                title=
+                    self._question_title(
+                        question,
+                        fallback=(
+                            f"{self._pretty_name(y_column)} "
+                            "vs "
+                            f"{self._pretty_name(x_column)}"
+                        )
+                    ),
 
-                    chart_type=
-                        "scatter",
+                x=x_column,
+
+                y=y_column,
+
+                data=
+                    self.dataframe_to_records(
+                        chart_df
+                    ),
+
+                reason=(
+                    "The user explicitly requested "
+                    "a scatter plot."
+                ),
+
+                metadata={
+                    "intent": "relationship"
+                }
+            )
+
+        # ====================================================
+        # EXPLICIT HEATMAP
+        # ====================================================
+
+        if (
+            requested_type == "heatmap"
+            and
+            len(numeric_columns) >= 2
+        ):
+
+            numeric_df = (
+                self._prepare_numeric_dataframe(
+                    df,
+                    numeric_columns
+                )
+            )
+
+            if numeric_df.shape[1] >= 2:
+
+                matrix = (
+                    numeric_df.corr()
+                )
+
+                return self._create_chart(
+                    chart_type="heatmap",
 
                     title=
                         self._question_title(
-
                             question,
-
                             fallback=(
-                                f"{self._pretty_name(y_column)} "
-                                "vs "
-                                f"{self._pretty_name(x_column)}"
+                                "Numerical Correlation "
+                                "Heatmap"
                             )
                         ),
 
-                    x=
-                        x_column,
+                    x="x",
 
-                    y=
-                        y_column,
+                    y="y",
 
                     data=
-                        self.dataframe_to_records(
-                            chart_df
+                        self._correlation_records(
+                            matrix
                         ),
 
                     reason=(
-                        "The user explicitly "
-                        "requested a scatter plot."
-                    )
+                        "The user explicitly requested "
+                        "a heatmap."
+                    ),
+
+                    metadata={
+                        "intent": "correlation",
+                        "value": "correlation"
+                    }
+                )
+
+        # ====================================================
+        # EXPLICIT STACKED BAR
+        # ====================================================
+
+        if (
+            requested_type == "stacked_bar"
+            and
+            len(categorical_columns) >= 2
+        ):
+
+            x_column = (
+                categorical_columns[0]
+            )
+
+            color_column = (
+                categorical_columns[1]
+            )
+
+            chart_df = (
+                df[
+                    [
+                        x_column,
+                        color_column
+                    ]
+                ]
+                .copy()
+            )
+
+            chart_df[x_column] = (
+                chart_df[x_column]
+                .fillna("Missing")
+                .astype(str)
+            )
+
+            chart_df[color_column] = (
+                chart_df[color_column]
+                .fillna("Missing")
+                .astype(str)
+            )
+
+            chart_df = (
+                chart_df
+                .groupby(
+                    [
+                        x_column,
+                        color_column
+                    ]
+                )
+                .size()
+                .reset_index(
+                    name="count"
                 )
             )
 
+            return self._create_chart(
+                chart_type="stacked_bar",
+
+                title=
+                    self._question_title(
+                        question,
+                        fallback=(
+                            f"{self._pretty_name(color_column)} "
+                            "by "
+                            f"{self._pretty_name(x_column)}"
+                        )
+                    ),
+
+                x=x_column,
+
+                y="count",
+
+                color=color_column,
+
+                data=
+                    self.dataframe_to_records(
+                        chart_df
+                    ),
+
+                reason=(
+                    "The user explicitly requested "
+                    "a stacked bar chart."
+                ),
+
+                metadata={
+                    "intent": "composition"
+                }
+            )
 
         # ====================================================
         # EXPLICIT LINE
         # ====================================================
 
         if (
-            requested_type
-            ==
-            "line"
+            requested_type == "line"
             and
             numeric_columns
         ):
@@ -1319,32 +2173,24 @@ class VisualizationService:
             if datetime_columns:
 
                 x_column = (
-                    datetime_columns[
-                        0
-                    ]
+                    datetime_columns[0]
                 )
 
             elif categorical_columns:
 
                 x_column = (
-                    categorical_columns[
-                        0
-                    ]
+                    categorical_columns[0]
                 )
 
             else:
 
                 x_column = None
 
-
             if x_column:
 
                 y_column = (
-                    numeric_columns[
-                        0
-                    ]
+                    numeric_columns[0]
                 )
-
 
                 chart_df = (
                     df[
@@ -1357,75 +2203,64 @@ class VisualizationService:
                     .copy()
                 )
 
+                if x_column in datetime_columns:
 
-                return (
-                    self._create_chart(
-
-                        chart_type=
-                            "line",
-
-                        title=
-                            self._question_title(
-
-                                question,
-
-                                fallback=(
-                                    f"{self._pretty_name(y_column)} "
-                                    "by "
-                                    f"{self._pretty_name(x_column)}"
-                                )
-                            ),
-
-                        x=
-                            x_column,
-
-                        y=
-                            y_column,
-
-                        data=
-                            self.dataframe_to_records(
-                                chart_df
-                            ),
-
-                        reason=(
-                            "The user explicitly "
-                            "requested a line chart."
+                    chart_df = (
+                        chart_df.sort_values(
+                            x_column
                         )
                     )
-                )
 
+                return self._create_chart(
+                    chart_type="line",
+
+                    title=
+                        self._question_title(
+                            question,
+                            fallback=(
+                                f"{self._pretty_name(y_column)} "
+                                "by "
+                                f"{self._pretty_name(x_column)}"
+                            )
+                        ),
+
+                    x=x_column,
+
+                    y=y_column,
+
+                    data=
+                        self.dataframe_to_records(
+                            chart_df
+                        ),
+
+                    reason=(
+                        "The user explicitly requested "
+                        "a line chart."
+                    ),
+
+                    metadata={
+                        "intent": "trend"
+                    }
+                )
 
         # ====================================================
         # EXPLICIT BAR
         # ====================================================
 
         if (
-            requested_type
-            ==
-            "bar"
+            requested_type == "bar"
             and
             categorical_columns
             and
             numeric_columns
         ):
 
-            return (
-                self._category_numeric_bar(
-
-                    df,
-
-                    categorical_columns[
-                        0
-                    ],
-
-                    numeric_columns[
-                        0
-                    ],
-
-                    question
-                )
+            return self._category_numeric_bar(
+                df,
+                categorical_columns[0],
+                numeric_columns[0],
+                question
             )
-
 
         # ====================================================
         # AUTOMATIC DATETIME + NUMERIC
@@ -1438,17 +2273,12 @@ class VisualizationService:
         ):
 
             x_column = (
-                datetime_columns[
-                    0
-                ]
+                datetime_columns[0]
             )
 
             y_column = (
-                numeric_columns[
-                    0
-                ]
+                numeric_columns[0]
             )
-
 
             chart_df = (
                 df[
@@ -1463,43 +2293,36 @@ class VisualizationService:
                 )
             )
 
+            return self._create_chart(
+                chart_type="line",
 
-            return (
-                self._create_chart(
+                title=
+                    self._question_title(
+                        question,
+                        fallback=(
+                            f"{self._pretty_name(y_column)} "
+                            "Over Time"
+                        )
+                    ),
 
-                    chart_type=
-                        "line",
+                x=x_column,
 
-                    title=
-                        self._question_title(
+                y=y_column,
 
-                            question,
+                data=
+                    self.dataframe_to_records(
+                        chart_df
+                    ),
 
-                            fallback=(
-                                f"{self._pretty_name(y_column)} "
-                                "Over Time"
-                            )
-                        ),
+                reason=(
+                    "Datetime and numerical results "
+                    "are suitable for a line chart."
+                ),
 
-                    x=
-                        x_column,
-
-                    y=
-                        y_column,
-
-                    data=
-                        self.dataframe_to_records(
-                            chart_df
-                        ),
-
-                    reason=(
-                        "Datetime and numerical "
-                        "results are suitable "
-                        "for a line chart."
-                    )
-                )
+                metadata={
+                    "intent": "temporal"
+                }
             )
-
 
         # ====================================================
         # AUTOMATIC CATEGORY + NUMERIC
@@ -1511,47 +2334,26 @@ class VisualizationService:
             numeric_columns
         ):
 
-            return (
-                self._category_numeric_bar(
-
-                    df,
-
-                    categorical_columns[
-                        0
-                    ],
-
-                    numeric_columns[
-                        0
-                    ],
-
-                    question
-                )
+            return self._category_numeric_bar(
+                df,
+                categorical_columns[0],
+                numeric_columns[0],
+                question
             )
-
 
         # ====================================================
         # AUTOMATIC NUMERIC + NUMERIC
         # ====================================================
 
-        if (
-            len(
-                numeric_columns
-            )
-            >= 2
-        ):
+        if len(numeric_columns) >= 2:
 
             x_column = (
-                numeric_columns[
-                    0
-                ]
+                numeric_columns[0]
             )
 
             y_column = (
-                numeric_columns[
-                    1
-                ]
+                numeric_columns[1]
             )
-
 
             chart_df = (
                 df[
@@ -1562,48 +2364,41 @@ class VisualizationService:
                 ]
                 .dropna()
                 .head(
-                    500
+                    self.max_scatter_points
                 )
             )
 
+            return self._create_chart(
+                chart_type="scatter",
 
-            return (
-                self._create_chart(
+                title=
+                    self._question_title(
+                        question,
+                        fallback=(
+                            f"{self._pretty_name(y_column)} "
+                            "vs "
+                            f"{self._pretty_name(x_column)}"
+                        )
+                    ),
 
-                    chart_type=
-                        "scatter",
+                x=x_column,
 
-                    title=
-                        self._question_title(
+                y=y_column,
 
-                            question,
+                data=
+                    self.dataframe_to_records(
+                        chart_df
+                    ),
 
-                            fallback=(
-                                f"{self._pretty_name(y_column)} "
-                                "vs "
-                                f"{self._pretty_name(x_column)}"
-                            )
-                        ),
+                reason=(
+                    "Two numerical columns are suitable "
+                    "for a scatter plot."
+                ),
 
-                    x=
-                        x_column,
-
-                    y=
-                        y_column,
-
-                    data=
-                        self.dataframe_to_records(
-                            chart_df
-                        ),
-
-                    reason=(
-                        "Two numerical columns "
-                        "are suitable for a "
-                        "scatter plot."
-                    )
-                )
+                metadata={
+                    "intent": "relationship"
+                }
             )
-
 
         # ====================================================
         # SINGLE CATEGORY
@@ -1616,22 +2411,13 @@ class VisualizationService:
         ):
 
             column = (
-                categorical_columns[
-                    0
-                ]
+                categorical_columns[0]
             )
 
-
             counts = (
-                df[
-                    column
-                ]
-                .fillna(
-                    "Missing"
-                )
-                .astype(
-                    str
-                )
+                df[column]
+                .fillna("Missing")
+                .astype(str)
                 .value_counts()
                 .head(
                     self.max_categories
@@ -1639,54 +2425,43 @@ class VisualizationService:
                 .reset_index()
             )
 
-
             counts.columns = [
-
                 column,
-
                 "count"
             ]
 
+            return self._create_chart(
+                chart_type="bar",
 
-            return (
-                self._create_chart(
+                title=
+                    self._question_title(
+                        question,
+                        fallback=(
+                            f"{self._pretty_name(column)} "
+                            "Distribution"
+                        )
+                    ),
 
-                    chart_type=
-                        "bar",
+                x=column,
 
-                    title=
-                        self._question_title(
+                y="count",
 
-                            question,
+                data=
+                    self.dataframe_to_records(
+                        counts
+                    ),
 
-                            fallback=(
-                                f"{self._pretty_name(column)} "
-                                "Distribution"
-                            )
-                        ),
+                reason=(
+                    "Categorical result is suitable "
+                    "for a frequency bar chart."
+                ),
 
-                    x=
-                        column,
-
-                    y=
-                        "count",
-
-                    data=
-                        self.dataframe_to_records(
-                            counts
-                        ),
-
-                    reason=(
-                        "Categorical result is "
-                        "suitable for a frequency "
-                        "bar chart."
-                    )
-                )
+                metadata={
+                    "intent": "distribution"
+                }
             )
 
-
         return None
-
 
     # ========================================================
     # CATEGORY NUMERIC BAR
@@ -1707,50 +2482,107 @@ class VisualizationService:
                     y_column
                 ]
             ]
-            .dropna()
-            .head(
-                self.max_categories
+            .copy()
+        )
+
+        chart_df[
+            y_column
+        ] = pd.to_numeric(
+            chart_df[
+                y_column
+            ],
+            errors="coerce"
+        )
+
+        chart_df = (
+            chart_df
+            .dropna(
+                subset=[
+                    y_column
+                ]
             )
         )
 
+        if chart_df.empty:
+            return None
 
-        return (
-            self._create_chart(
+        chart_df[
+            x_column
+        ] = (
+            chart_df[
+                x_column
+            ]
+            .fillna("Missing")
+            .astype(str)
+        )
 
-                chart_type=
-                    "bar",
+        # SQL result may already be aggregated.
+        # Preserve it when categories are unique.
 
-                title=
-                    self._question_title(
+        if (
+            chart_df[x_column]
+            .nunique()
+            ==
+            len(chart_df)
+        ):
 
-                        question,
-
-                        fallback=(
-                            f"{self._pretty_name(y_column)} "
-                            "by "
-                            f"{self._pretty_name(x_column)}"
-                        )
-                    ),
-
-                x=
-                    x_column,
-
-                y=
-                    y_column,
-
-                data=
-                    self.dataframe_to_records(
-                        chart_df
-                    ),
-
-                reason=(
-                    "Categorical and numerical "
-                    "results are suitable for "
-                    "a bar chart."
+            chart_df = (
+                chart_df.head(
+                    self.max_categories
                 )
             )
-        )
 
+        else:
+
+            chart_df = (
+                chart_df
+                .groupby(
+                    x_column,
+                    as_index=False
+                )[
+                    y_column
+                ]
+                .mean()
+                .sort_values(
+                    y_column,
+                    ascending=False
+                )
+                .head(
+                    self.max_categories
+                )
+            )
+
+        return self._create_chart(
+            chart_type="bar",
+
+            title=
+                self._question_title(
+                    question,
+                    fallback=(
+                        f"{self._pretty_name(y_column)} "
+                        "by "
+                        f"{self._pretty_name(x_column)}"
+                    )
+                ),
+
+            x=x_column,
+
+            y=y_column,
+
+            data=
+                self.dataframe_to_records(
+                    chart_df
+                ),
+
+            reason=(
+                "Categorical and numerical results "
+                "are suitable for a bar chart."
+            ),
+
+            metadata={
+                "intent": "comparison"
+            }
+        )
 
     # ========================================================
     # HISTOGRAM DATA
@@ -1770,11 +2602,8 @@ class VisualizationService:
             .dropna()
         )
 
-
         if numeric_series.empty:
-
             return []
-
 
         minimum = float(
             numeric_series.min()
@@ -1784,13 +2613,10 @@ class VisualizationService:
             numeric_series.max()
         )
 
-
         if minimum == maximum:
 
             return [
-
                 {
-
                     "bin":
                         str(
                             round(
@@ -1808,15 +2634,12 @@ class VisualizationService:
                 }
             ]
 
+        # Square-root rule with a practical cap.
 
         number_of_bins = min(
-
-            10,
-
+            20,
             max(
-
-                3,
-
+                5,
                 int(
                     math.sqrt(
                         len(
@@ -1827,18 +2650,11 @@ class VisualizationService:
             )
         )
 
-
         bins = pd.cut(
-
             numeric_series,
-
-            bins=
-                number_of_bins,
-
-            duplicates=
-                "drop"
+            bins=number_of_bins,
+            duplicates="drop"
         )
-
 
         counts = (
             bins.value_counts(
@@ -1846,16 +2662,13 @@ class VisualizationService:
             )
         )
 
-
         data = []
-
 
         for interval, count in (
             counts.items()
         ):
 
             data.append({
-
                 "bin":
                     (
                         f"{interval.left:.2f} - "
@@ -1863,14 +2676,10 @@ class VisualizationService:
                     ),
 
                 "frequency":
-                    int(
-                        count
-                    )
+                    int(count)
             })
 
-
         return data
-
 
     # ========================================================
     # BOX PLOT DATA
@@ -1890,11 +2699,8 @@ class VisualizationService:
             .dropna()
         )
 
-
         if numeric_series.empty:
-
             return []
-
 
         q1 = float(
             numeric_series.quantile(
@@ -1912,11 +2718,7 @@ class VisualizationService:
             )
         )
 
-
-        iqr = (
-            q3 - q1
-        )
-
+        iqr = q3 - q1
 
         lower_bound = (
             q1
@@ -1930,9 +2732,7 @@ class VisualizationService:
             1.5 * iqr
         )
 
-
         outliers = (
-
             numeric_series[
                 (
                     numeric_series
@@ -1948,11 +2748,17 @@ class VisualizationService:
             ]
         )
 
+        # Do not send thousands of outlier values to
+        # the frontend.
+
+        outlier_values = (
+            outliers
+            .head(100)
+            .tolist()
+        )
 
         return [
-
             {
-
                 "column":
                     column,
 
@@ -1987,18 +2793,19 @@ class VisualizationService:
 
                 "outliers":
                     [
-
                         self._json_safe_value(
                             value
                         )
+                        for value
+                        in outlier_values
+                    ],
 
-                        for value in (
-                            outliers.tolist()
-                        )
-                    ]
+                "outlier_count":
+                    int(
+                        len(outliers)
+                    )
             }
         ]
-
 
     # ========================================================
     # PRETTY NAME
@@ -2018,7 +2825,6 @@ class VisualizationService:
             .strip()
             .title()
         )
-
 
     # ========================================================
     # QUESTION TITLE
@@ -2042,18 +2848,10 @@ class VisualizationService:
             title = (
                 question
                 .strip()
-                .rstrip(
-                    "?"
-                )
+                .rstrip("?")
             )
 
-
-            # Don't let giant NL prompts become
-            # giant chart titles.
-
             if len(title) <= 100:
-
                 return title
-
 
         return fallback

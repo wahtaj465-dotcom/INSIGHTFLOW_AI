@@ -1,0 +1,13 @@
+customer_id,age,income,city,signup_date,active,score
+C001,25,45000,Delhi,2025-01-10,Yes,82
+C002,31,52000,Mumbai,2025-02-15,No,75
+C003,,48000,Delhi,2025-03-01,Yes,88
+C004,42,,Bangalore,invalid-date,No,69
+C005,29,51000,mumbai,2025-04-20,YES,91
+C006,150,47000,Delhi,2025-05-11,No,77
+C007,35,9999999,Bangalore,2025-06-03,Yes,84
+C008,27,43000,,2025-07-17,No,
+C009,33,not_available,Delhi,2025-08-08,Yes,80
+C010,38,61000,Mumbai,,No,73
+C010,38,61000,Mumbai,,No,73
+C011,-5,55000,Bangalore,2025-09-09,maybe,86

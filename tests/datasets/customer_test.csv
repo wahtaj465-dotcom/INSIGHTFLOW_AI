@@ -1,0 +1,11 @@
+customer_id,name,age,city,membership,is_active,total_orders,total_spend
+CUS001,Aarav,24,Delhi,Gold,True,15,45000
+CUS002,Riya,29,Mumbai,Silver,True,8,21000
+CUS003,Karan,35,Bangalore,Gold,False,20,67000
+CUS004,Neha,31,Delhi,Bronze,True,4,9000
+CUS005,Rahul,42,Mumbai,Gold,True,25,82000
+CUS006,Priya,27,Bangalore,Silver,False,10,28000
+CUS007,Arjun,38,Delhi,Silver,True,13,37000
+CUS008,Ananya,26,Mumbai,Bronze,True,3,7500
+CUS009,Rohan,45,Bangalore,Gold,False,30,99000
+CUS010,Isha,33,Delhi,Silver,True,11,32000

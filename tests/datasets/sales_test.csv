@@ -1,0 +1,13 @@
+order_id,order_date,region,category,product,quantity,unit_price,revenue
+ORD001,2026-01-01,North,Electronics,Laptop,2,55000,110000
+ORD002,2026-01-02,South,Electronics,Phone,3,25000,75000
+ORD003,2026-01-03,East,Furniture,Chair,5,4500,22500
+ORD004,2026-01-04,West,Furniture,Desk,2,12000,24000
+ORD005,2026-01-05,North,Electronics,Phone,4,25000,100000
+ORD006,2026-01-06,South,Clothing,Shirt,10,1200,12000
+ORD007,2026-01-07,East,Clothing,Jacket,4,3500,14000
+ORD008,2026-01-08,West,Electronics,Laptop,1,55000,55000
+ORD009,2026-01-09,North,Furniture,Chair,6,4500,27000
+ORD010,2026-01-10,South,Clothing,Shirt,8,1200,9600
+ORD011,2026-01-11,East,Electronics,Phone,2,25000,50000
+ORD012,2026-01-12,West,Furniture,Desk,3,12000,36000

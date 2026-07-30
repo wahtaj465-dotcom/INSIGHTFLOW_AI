@@ -17,14 +17,12 @@ def _to_dataframe(data):
 
         return pd.DataFrame()
 
-
     if isinstance(
         data,
         pd.DataFrame
     ):
 
         return data.copy()
-
 
     if isinstance(
         data,
@@ -49,7 +47,6 @@ def _to_dataframe(data):
 
                 return pd.DataFrame()
 
-
     if isinstance(
         data,
         (
@@ -68,7 +65,6 @@ def _to_dataframe(data):
 
             return pd.DataFrame()
 
-
     return pd.DataFrame()
 
 
@@ -78,10 +74,12 @@ def _pretty_name(name):
 
         return ""
 
-
     return (
         str(name)
-        .replace("_", " ")
+        .replace(
+            "_",
+            " "
+        )
         .strip()
         .title()
     )
@@ -92,7 +90,6 @@ def _render_reason(chart):
     reason = chart.get(
         "reason"
     )
-
 
     if reason:
 
@@ -115,7 +112,6 @@ def _get_chart_type(chart):
         ""
     )
 
-
     return (
         str(chart_type)
         .strip()
@@ -131,6 +127,19 @@ def _get_chart_type(chart):
     )
 
 
+def _get_group(chart):
+
+    return (
+        chart.get(
+            "group"
+        )
+        or
+        chart.get(
+            "color"
+        )
+    )
+
+
 # ============================================================
 # KPI
 # ============================================================
@@ -142,17 +151,14 @@ def _render_kpi(chart):
         "Result"
     )
 
-
     value = chart.get(
         "value",
         "N/A"
     )
 
-
     delta = chart.get(
         "delta"
     )
-
 
     if delta is not None:
 
@@ -182,7 +188,6 @@ def _render_bar(chart):
         )
     )
 
-
     if df.empty:
 
         st.info(
@@ -190,7 +195,6 @@ def _render_bar(chart):
         )
 
         return
-
 
     x = chart.get(
         "x"
@@ -200,16 +204,9 @@ def _render_bar(chart):
         "y"
     )
 
-    group = (
-        chart.get(
-            "group"
-        )
-        or
-        chart.get(
-            "color"
-        )
+    group = _get_group(
+        chart
     )
-
 
     if (
         x not in df.columns
@@ -223,7 +220,6 @@ def _render_bar(chart):
         )
 
         return
-
 
     kwargs = {
 
@@ -255,7 +251,6 @@ def _render_bar(chart):
         }
     }
 
-
     if (
         group
         and
@@ -270,11 +265,9 @@ def _render_bar(chart):
             "barmode"
         ] = "group"
 
-
     fig = px.bar(
         **kwargs
     )
-
 
     fig.update_layout(
 
@@ -297,6 +290,145 @@ def _render_bar(chart):
         )
     )
 
+    st.plotly_chart(
+        fig,
+        width="stretch"
+    )
+
+
+# ============================================================
+# STACKED BAR
+# ============================================================
+
+def _render_stacked_bar(chart):
+    """
+    Render categorical composition.
+
+    Expected backend metadata:
+
+        chart_type = stacked_bar
+        x = category
+        y = count/value
+        color = second category
+    """
+
+    df = _to_dataframe(
+        chart.get(
+            "data"
+        )
+    )
+
+    if df.empty:
+
+        st.info(
+            "No stacked bar data available."
+        )
+
+        return
+
+    x = chart.get(
+        "x"
+    )
+
+    y = chart.get(
+        "y"
+    )
+
+    group = _get_group(
+        chart
+    )
+
+    if (
+        not x
+        or
+        x not in df.columns
+    ):
+
+        st.warning(
+            "Stacked bar chart requires "
+            "a valid X column."
+        )
+
+        return
+
+    if (
+        not y
+        or
+        y not in df.columns
+    ):
+
+        st.warning(
+            "Stacked bar chart requires "
+            "a valid Y column."
+        )
+
+        return
+
+    if (
+        not group
+        or
+        group not in df.columns
+    ):
+
+        st.warning(
+            "Stacked bar chart requires "
+            "a valid grouping column."
+        )
+
+        return
+
+    fig = px.bar(
+
+        df,
+
+        x=x,
+
+        y=y,
+
+        color=group,
+
+        barmode="stack",
+
+        title=chart.get(
+            "title"
+        ),
+
+        labels={
+
+            x:
+                _pretty_name(
+                    x
+                ),
+
+            y:
+                _pretty_name(
+                    y
+                ),
+
+            group:
+                _pretty_name(
+                    group
+                )
+        }
+    )
+
+    fig.update_layout(
+
+        xaxis_title=
+            _pretty_name(
+                x
+            ),
+
+        yaxis_title=
+            _pretty_name(
+                y
+            ),
+
+        legend_title=
+            _pretty_name(
+                group
+            )
+    )
 
     st.plotly_chart(
         fig,
@@ -316,7 +448,6 @@ def _render_histogram(chart):
         )
     )
 
-
     if df.empty:
 
         st.info(
@@ -325,9 +456,8 @@ def _render_histogram(chart):
 
         return
 
-
     # --------------------------------------------------------
-    # Backend pre-binned histogram
+    # BACKEND PRE-BINNED HISTOGRAM
     # --------------------------------------------------------
 
     if (
@@ -351,33 +481,21 @@ def _render_histogram(chart):
             labels={
 
                 "bin":
-                    _pretty_name(
-                        chart.get(
-                            "x",
-                            "Value"
-                        )
-                    ),
+                    "Bin",
 
                 "frequency":
                     "Frequency"
             }
         )
 
-
         fig.update_layout(
 
             xaxis_title=
-                _pretty_name(
-                    chart.get(
-                        "x",
-                        "Value"
-                    )
-                ),
+                "Bin",
 
             yaxis_title=
                 "Frequency"
         )
-
 
         st.plotly_chart(
             fig,
@@ -386,15 +504,13 @@ def _render_histogram(chart):
 
         return
 
-
     # --------------------------------------------------------
-    # Raw numerical values
+    # RAW NUMERICAL VALUES
     # --------------------------------------------------------
 
     x = chart.get(
         "x"
     )
-
 
     if (
         x
@@ -420,7 +536,6 @@ def _render_histogram(chart):
             }
         )
 
-
         fig.update_layout(
 
             xaxis_title=
@@ -432,14 +547,12 @@ def _render_histogram(chart):
                 "Frequency"
         )
 
-
         st.plotly_chart(
             fig,
             width="stretch"
         )
 
         return
-
 
     st.warning(
         "Histogram specification is invalid."
@@ -458,7 +571,6 @@ def _render_line(chart):
         )
     )
 
-
     if df.empty:
 
         st.info(
@@ -466,7 +578,6 @@ def _render_line(chart):
         )
 
         return
-
 
     x = chart.get(
         "x"
@@ -476,16 +587,9 @@ def _render_line(chart):
         "y"
     )
 
-    group = (
-        chart.get(
-            "group"
-        )
-        or
-        chart.get(
-            "color"
-        )
+    group = _get_group(
+        chart
     )
-
 
     if (
         x not in df.columns
@@ -500,11 +604,44 @@ def _render_line(chart):
 
         return
 
+    # --------------------------------------------------------
+    # Attempt datetime ordering
+    # --------------------------------------------------------
+
+    plot_df = df.copy()
+
+    if not pd.api.types.is_numeric_dtype(
+        plot_df[x]
+    ):
+
+        try:
+
+            converted = pd.to_datetime(
+                plot_df[x],
+                errors="coerce"
+            )
+
+            if (
+                converted.notna().mean()
+                >= 0.8
+            ):
+
+                plot_df[x] = converted
+
+                plot_df = (
+                    plot_df.sort_values(
+                        x
+                    )
+                )
+
+        except Exception:
+
+            pass
 
     kwargs = {
 
         "data_frame":
-            df,
+            plot_df,
 
         "x":
             x,
@@ -534,22 +671,19 @@ def _render_line(chart):
         }
     }
 
-
     if (
         group
         and
-        group in df.columns
+        group in plot_df.columns
     ):
 
         kwargs[
             "color"
         ] = group
 
-
     fig = px.line(
         **kwargs
     )
-
 
     fig.update_layout(
 
@@ -561,9 +695,16 @@ def _render_line(chart):
         yaxis_title=
             _pretty_name(
                 y
-            )
-    )
+            ),
 
+        legend_title=(
+            _pretty_name(
+                group
+            )
+            if group
+            else None
+        )
+    )
 
     st.plotly_chart(
         fig,
@@ -583,7 +724,6 @@ def _render_scatter(chart):
         )
     )
 
-
     if df.empty:
 
         st.info(
@@ -591,7 +731,6 @@ def _render_scatter(chart):
         )
 
         return
-
 
     x = chart.get(
         "x"
@@ -601,16 +740,9 @@ def _render_scatter(chart):
         "y"
     )
 
-    group = (
-        chart.get(
-            "group"
-        )
-        or
-        chart.get(
-            "color"
-        )
+    group = _get_group(
+        chart
     )
-
 
     if (
         x not in df.columns
@@ -624,7 +756,6 @@ def _render_scatter(chart):
         )
 
         return
-
 
     kwargs = {
 
@@ -656,7 +787,6 @@ def _render_scatter(chart):
         }
     }
 
-
     if (
         group
         and
@@ -667,11 +797,9 @@ def _render_scatter(chart):
             "color"
         ] = group
 
-
     fig = px.scatter(
         **kwargs
     )
-
 
     fig.update_layout(
 
@@ -683,9 +811,16 @@ def _render_scatter(chart):
         yaxis_title=
             _pretty_name(
                 y
-            )
-    )
+            ),
 
+        legend_title=(
+            _pretty_name(
+                group
+            )
+            if group
+            else None
+        )
+    )
 
     st.plotly_chart(
         fig,
@@ -705,7 +840,6 @@ def _render_box(chart):
         )
     )
 
-
     if df.empty:
 
         st.info(
@@ -713,7 +847,6 @@ def _render_box(chart):
         )
 
         return
-
 
     x = chart.get(
         "x"
@@ -723,16 +856,9 @@ def _render_box(chart):
         "y"
     )
 
-    group = (
-        chart.get(
-            "group"
-        )
-        or
-        chart.get(
-            "color"
-        )
+    group = _get_group(
+        chart
     )
-
 
     # --------------------------------------------------------
     # RAW DATA
@@ -763,17 +889,17 @@ def _render_box(chart):
                 "outliers"
         }
 
-
         if (
             x
             and
             x in df.columns
+            and
+            x != y
         ):
 
             kwargs[
                 "x"
             ] = x
-
 
         if (
             group
@@ -785,11 +911,9 @@ def _render_box(chart):
                 "color"
             ] = group
 
-
         fig = px.box(
             **kwargs
         )
-
 
         fig.update_layout(
 
@@ -797,7 +921,11 @@ def _render_box(chart):
                 _pretty_name(
                     x
                 )
-                if x
+                if (
+                    x
+                    and
+                    x != y
+                )
                 else None
             ),
 
@@ -815,15 +943,12 @@ def _render_box(chart):
             )
         )
 
-
         st.plotly_chart(
             fig,
             width="stretch"
         )
 
-
         return
-
 
     # --------------------------------------------------------
     # SUMMARY STATISTICS
@@ -838,7 +963,6 @@ def _render_box(chart):
         "max"
     }
 
-
     if required.issubset(
         set(
             df.columns
@@ -847,12 +971,22 @@ def _render_box(chart):
 
         fig = go.Figure()
 
-
         for index, row in (
             df.iterrows()
         ):
 
             if (
+                "column"
+                in df.columns
+            ):
+
+                name = str(
+                    row[
+                        "column"
+                    ]
+                )
+
+            elif (
                 x
                 and
                 x in df.columns
@@ -871,7 +1005,6 @@ def _render_box(chart):
                     or
                     f"Distribution {index + 1}"
                 )
-
 
             fig.add_trace(
 
@@ -911,7 +1044,6 @@ def _render_box(chart):
                 )
             )
 
-
         fig.update_layout(
 
             title=
@@ -925,15 +1057,12 @@ def _render_box(chart):
                 )
         )
 
-
         st.plotly_chart(
             fig,
             width="stretch"
         )
 
-
         return
-
 
     st.warning(
         "Box plot data format "
@@ -953,7 +1082,6 @@ def _render_violin(chart):
         )
     )
 
-
     if df.empty:
 
         st.info(
@@ -961,7 +1089,6 @@ def _render_violin(chart):
         )
 
         return
-
 
     x = chart.get(
         "x"
@@ -971,16 +1098,9 @@ def _render_violin(chart):
         "y"
     )
 
-    group = (
-        chart.get(
-            "group"
-        )
-        or
-        chart.get(
-            "color"
-        )
+    group = _get_group(
+        chart
     )
-
 
     if (
         not y
@@ -994,7 +1114,6 @@ def _render_violin(chart):
         )
 
         return
-
 
     kwargs = {
 
@@ -1016,7 +1135,6 @@ def _render_violin(chart):
             "outliers"
     }
 
-
     if (
         x
         and
@@ -1026,7 +1144,6 @@ def _render_violin(chart):
         kwargs[
             "x"
         ] = x
-
 
     if (
         group
@@ -1038,11 +1155,9 @@ def _render_violin(chart):
             "color"
         ] = group
 
-
     fig = px.violin(
         **kwargs
     )
-
 
     fig.update_layout(
 
@@ -1068,6 +1183,153 @@ def _render_violin(chart):
         )
     )
 
+    st.plotly_chart(
+        fig,
+        width="stretch"
+    )
+
+
+# ============================================================
+# HEATMAP
+# ============================================================
+
+def _render_heatmap(chart):
+    """
+    Render correlation heatmap.
+
+    Expected backend format:
+
+        [
+            {
+                "x": "column_a",
+                "y": "column_b",
+                "correlation": 0.82
+            },
+            ...
+        ]
+    """
+
+    df = _to_dataframe(
+        chart.get(
+            "data"
+        )
+    )
+
+    if df.empty:
+
+        st.info(
+            "No heatmap data available."
+        )
+
+        return
+
+    x = chart.get(
+        "x",
+        "x"
+    )
+
+    y = chart.get(
+        "y",
+        "y"
+    )
+
+    metadata = (
+        chart.get(
+            "metadata"
+        )
+        or
+        {}
+    )
+
+    value_column = (
+        metadata.get(
+            "value"
+        )
+        or
+        chart.get(
+            "value"
+        )
+        or
+        "correlation"
+    )
+
+    if (
+        x not in df.columns
+        or
+        y not in df.columns
+        or
+        value_column not in df.columns
+    ):
+
+        st.warning(
+            "Heatmap specification "
+            "is missing required fields."
+        )
+
+        return
+
+    try:
+
+        matrix = (
+            df.pivot(
+                index=y,
+                columns=x,
+                values=value_column
+            )
+        )
+
+    except Exception as error:
+
+        st.warning(
+            "Could not construct heatmap matrix: "
+            f"{error}"
+        )
+
+        return
+
+    if matrix.empty:
+
+        st.info(
+            "No heatmap matrix could be generated."
+        )
+
+        return
+
+    fig = px.imshow(
+
+        matrix,
+
+        text_auto=".2f",
+
+        aspect="auto",
+
+        title=chart.get(
+            "title"
+        ),
+
+        labels={
+
+            "x":
+                "Variable",
+
+            "y":
+                "Variable",
+
+            "color":
+                _pretty_name(
+                    value_column
+                )
+        }
+    )
+
+    fig.update_layout(
+
+        xaxis_title=
+            "Variable",
+
+        yaxis_title=
+            "Variable"
+    )
 
     st.plotly_chart(
         fig,
@@ -1087,7 +1349,6 @@ def _render_pie(chart):
         )
     )
 
-
     if df.empty:
 
         st.info(
@@ -1096,7 +1357,6 @@ def _render_pie(chart):
 
         return
 
-
     x = chart.get(
         "x"
     )
@@ -1104,7 +1364,6 @@ def _render_pie(chart):
     y = chart.get(
         "y"
     )
-
 
     if (
         x not in df.columns
@@ -1119,7 +1378,6 @@ def _render_pie(chart):
 
         return
 
-
     fig = px.pie(
 
         df,
@@ -1132,7 +1390,6 @@ def _render_pie(chart):
             "title"
         )
     )
-
 
     st.plotly_chart(
         fig,
@@ -1151,16 +1408,26 @@ def render_chart(chart):
     Supported chart types:
 
         kpi
+        metric
+
         bar
+        stacked_bar
+
         histogram
+
         line
+
         scatter
+
         box
         boxplot
+
         violin
+
+        heatmap
+
         pie
     """
-
 
     if not chart:
 
@@ -1169,7 +1436,6 @@ def render_chart(chart):
         )
 
         return
-
 
     if not isinstance(
         chart,
@@ -1182,20 +1448,21 @@ def render_chart(chart):
 
         return
 
-
     chart_type = (
         _get_chart_type(
             chart
         )
     )
 
-
     _render_reason(
         chart
     )
 
-
     renderers = {
+
+        # -----------------------------------------
+        # KPI
+        # -----------------------------------------
 
         "kpi":
             _render_kpi,
@@ -1203,11 +1470,32 @@ def render_chart(chart):
         "metric":
             _render_kpi,
 
+        # -----------------------------------------
+        # BAR
+        # -----------------------------------------
+
         "bar":
             _render_bar,
 
         "bar_chart":
             _render_bar,
+
+        # -----------------------------------------
+        # STACKED BAR
+        # -----------------------------------------
+
+        "stacked_bar":
+            _render_stacked_bar,
+
+        "stacked_bar_chart":
+            _render_stacked_bar,
+
+        "stacked":
+            _render_stacked_bar,
+
+        # -----------------------------------------
+        # HISTOGRAM
+        # -----------------------------------------
 
         "histogram":
             _render_histogram,
@@ -1215,17 +1503,29 @@ def render_chart(chart):
         "hist":
             _render_histogram,
 
+        # -----------------------------------------
+        # LINE
+        # -----------------------------------------
+
         "line":
             _render_line,
 
         "line_chart":
             _render_line,
 
+        # -----------------------------------------
+        # SCATTER
+        # -----------------------------------------
+
         "scatter":
             _render_scatter,
 
         "scatter_plot":
             _render_scatter,
+
+        # -----------------------------------------
+        # BOX
+        # -----------------------------------------
 
         "box":
             _render_box,
@@ -1236,11 +1536,32 @@ def render_chart(chart):
         "box_plot":
             _render_box,
 
+        # -----------------------------------------
+        # VIOLIN
+        # -----------------------------------------
+
         "violin":
             _render_violin,
 
         "violin_plot":
             _render_violin,
+
+        # -----------------------------------------
+        # HEATMAP
+        # -----------------------------------------
+
+        "heatmap":
+            _render_heatmap,
+
+        "heat_map":
+            _render_heatmap,
+
+        "correlation_heatmap":
+            _render_heatmap,
+
+        # -----------------------------------------
+        # PIE
+        # -----------------------------------------
 
         "pie":
             _render_pie,
@@ -1249,13 +1570,11 @@ def render_chart(chart):
             _render_pie
     }
 
-
     renderer = (
         renderers.get(
             chart_type
         )
     )
-
 
     if renderer is None:
 
@@ -1266,7 +1585,6 @@ def render_chart(chart):
             f"current frontend."
         )
 
-
         with st.expander(
             "Visualization specification"
         ):
@@ -1275,9 +1593,7 @@ def render_chart(chart):
                 chart
             )
 
-
         return
-
 
     try:
 
@@ -1285,14 +1601,12 @@ def render_chart(chart):
             chart
         )
 
-
     except Exception as error:
 
         st.error(
             "Could not render visualization: "
             f"{error}"
         )
-
 
         with st.expander(
             "Visualization specification"

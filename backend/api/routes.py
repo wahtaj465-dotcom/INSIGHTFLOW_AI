@@ -16,9 +16,8 @@ from fastapi import (
     HTTPException
 )
 
-from backend.workflows.analytics_workflow import (
-    AnalyticsWorkflow
-)
+from backend.workflows.analytics_workflow import AnalyticsWorkflow
+from backend.services.dataset_manager import dataset_manager
 
 
 # ============================================================
@@ -26,12 +25,8 @@ from backend.workflows.analytics_workflow import (
 # ============================================================
 
 router = APIRouter(
-
     prefix="/api",
-
-    tags=[
-        "Analytics"
-    ]
+    tags=["Analytics"]
 )
 
 
@@ -39,17 +34,10 @@ router = APIRouter(
 # UPLOAD DIRECTORY
 # ============================================================
 
-UPLOAD_DIR = (
-    Path(
-        "data/uploads"
-    )
-)
-
+UPLOAD_DIR = Path("data/uploads")
 
 UPLOAD_DIR.mkdir(
-
     parents=True,
-
     exist_ok=True
 )
 
@@ -59,11 +47,8 @@ UPLOAD_DIR.mkdir(
 # ============================================================
 
 ALLOWED_EXTENSIONS = {
-
     ".csv",
-
     ".xlsx",
-
     ".xls"
 }
 
@@ -72,61 +57,46 @@ ALLOWED_EXTENSIONS = {
 # JSON SAFETY
 # ============================================================
 
-def make_json_safe(
-    value
-):
+def make_json_safe(value):
+    """
+    Recursively convert Pandas, NumPy, datetime and missing
+    values into JSON-safe Python objects.
+    """
 
     if value is None:
-
         return None
-
 
     # --------------------------------------------------------
     # DATAFRAME
     # --------------------------------------------------------
 
-    if isinstance(
-        value,
-        pd.DataFrame
-    ):
+    if isinstance(value, pd.DataFrame):
 
         return make_json_safe(
-
             value.to_dict(
                 orient="records"
             )
         )
 
-
     # --------------------------------------------------------
     # SERIES
     # --------------------------------------------------------
 
-    if isinstance(
-        value,
-        pd.Series
-    ):
+    if isinstance(value, pd.Series):
 
         return make_json_safe(
             value.tolist()
         )
 
-
     # --------------------------------------------------------
     # DICTIONARY
     # --------------------------------------------------------
 
-    if isinstance(
-        value,
-        dict
-    ):
+    if isinstance(value, dict):
 
         safe = {}
 
-
-        for key, item in (
-            value.items()
-        ):
+        for key, item in value.items():
 
             if isinstance(
                 key,
@@ -137,28 +107,17 @@ def make_json_safe(
                 )
             ):
 
-                safe_key = (
-                    key.isoformat()
-                )
+                safe_key = key.isoformat()
 
             else:
 
-                safe_key = str(
-                    key
-                )
+                safe_key = str(key)
 
-
-            safe[
-                safe_key
-            ] = (
-                make_json_safe(
-                    item
-                )
+            safe[safe_key] = make_json_safe(
+                item
             )
 
-
         return safe
-
 
     # --------------------------------------------------------
     # LIST / TUPLE / SET
@@ -174,120 +133,70 @@ def make_json_safe(
     ):
 
         return [
-
-            make_json_safe(
-                item
-            )
-
+            make_json_safe(item)
             for item in value
         ]
-
 
     # --------------------------------------------------------
     # NUMPY ARRAY
     # --------------------------------------------------------
 
-    if isinstance(
-        value,
-        np.ndarray
-    ):
+    if isinstance(value, np.ndarray):
 
         return make_json_safe(
             value.tolist()
         )
 
-
     # --------------------------------------------------------
     # NUMPY INTEGER
     # --------------------------------------------------------
 
-    if isinstance(
-        value,
-        np.integer
-    ):
+    if isinstance(value, np.integer):
 
-        return int(
-            value
-        )
-
+        return int(value)
 
     # --------------------------------------------------------
     # NUMPY FLOAT
     # --------------------------------------------------------
 
-    if isinstance(
-        value,
-        np.floating
-    ):
+    if isinstance(value, np.floating):
 
-        converted = float(
-            value
-        )
+        converted = float(value)
 
-
-        if not math.isfinite(
-            converted
-        ):
-
+        if not math.isfinite(converted):
             return None
 
-
         return converted
-
 
     # --------------------------------------------------------
     # PYTHON FLOAT
     # --------------------------------------------------------
 
-    if isinstance(
-        value,
-        float
-    ):
+    if isinstance(value, float):
 
-        if not math.isfinite(
-            value
-        ):
-
+        if not math.isfinite(value):
             return None
 
-
         return value
-
 
     # --------------------------------------------------------
     # NUMPY BOOLEAN
     # --------------------------------------------------------
 
-    if isinstance(
-        value,
-        np.bool_
-    ):
+    if isinstance(value, np.bool_):
 
-        return bool(
-            value
-        )
-
+        return bool(value)
 
     # --------------------------------------------------------
     # TIMESTAMP
     # --------------------------------------------------------
 
-    if isinstance(
-        value,
-        pd.Timestamp
-    ):
+    if isinstance(value, pd.Timestamp):
 
-        if pd.isna(
-            value
-        ):
-
+        if pd.isna(value):
             return None
 
-
-        return (
-            value.isoformat()
-        )
-
+        return value.isoformat()
 
     # --------------------------------------------------------
     # DATETIME / DATE
@@ -301,23 +210,15 @@ def make_json_safe(
         )
     ):
 
-        return (
-            value.isoformat()
-        )
-
+        return value.isoformat()
 
     # --------------------------------------------------------
-    # MISSING VALUE
+    # GENERIC MISSING VALUE
     # --------------------------------------------------------
 
     try:
 
-        missing = (
-            pd.isna(
-                value
-            )
-        )
-
+        missing = pd.isna(value)
 
         if isinstance(
             missing,
@@ -328,9 +229,7 @@ def make_json_safe(
         ):
 
             if missing:
-
                 return None
-
 
     except (
         TypeError,
@@ -338,7 +237,6 @@ def make_json_safe(
     ):
 
         pass
-
 
     # --------------------------------------------------------
     # NORMAL JSON TYPES
@@ -355,37 +253,30 @@ def make_json_safe(
 
         return value
 
+    # --------------------------------------------------------
+    # FALLBACK
+    # --------------------------------------------------------
 
-    return str(
-        value
-    )
+    return str(value)
 
 
 # ============================================================
 # DATAFRAME -> RECORDS
 # ============================================================
 
-def dataframe_to_records(
-    df
-):
+def dataframe_to_records(df):
 
     if df is None:
-
         return None
-
 
     if not isinstance(
         df,
         pd.DataFrame
     ):
 
-        return make_json_safe(
-            df
-        )
-
+        return make_json_safe(df)
 
     return make_json_safe(
-
         df.to_dict(
             orient="records"
         )
@@ -396,111 +287,68 @@ def dataframe_to_records(
 # SAVE UPLOAD
 # ============================================================
 
-async def save_uploaded_file(
-    file
-):
+async def save_uploaded_file(file):
 
     if not file.filename:
 
         raise HTTPException(
-
             status_code=400,
-
-            detail=(
-                "No file was provided."
-            )
+            detail="No file was provided."
         )
 
+    original_filename = Path(
+        file.filename
+    ).name
 
-    original_filename = (
+    extension = Path(
+        original_filename
+    ).suffix.lower()
 
-        Path(
-            file.filename
-        ).name
-    )
-
-
-    extension = (
-
-        Path(
-            original_filename
-        )
-        .suffix
-        .lower()
-    )
-
-
-    if (
-        extension
-        not in
-        ALLOWED_EXTENSIONS
-    ):
+    if extension not in ALLOWED_EXTENSIONS:
 
         raise HTTPException(
-
             status_code=400,
-
             detail=(
                 "Unsupported file type. "
-                "Currently supported: "
-                "CSV, XLSX and XLS."
+                "Currently supported: CSV, XLSX and XLS."
             )
         )
 
-
     unique_filename = (
-
-        f"{uuid4().hex}"
-        f"{extension}"
+        f"{uuid4().hex}{extension}"
     )
 
-
     file_path = (
-
-        UPLOAD_DIR
-        /
+        UPLOAD_DIR /
         unique_filename
     )
 
-
     try:
 
-        with file_path.open(
-            "wb"
-        ) as buffer:
+        with file_path.open("wb") as buffer:
 
             shutil.copyfileobj(
-
                 file.file,
-
                 buffer
             )
-
 
     except Exception as error:
 
         raise HTTPException(
-
             status_code=500,
-
             detail=(
                 "Could not save uploaded "
                 f"file: {error}"
             )
         )
 
-
     finally:
 
         await file.close()
 
-
     return (
-
         original_filename,
-
         unique_filename,
-
         file_path
     )
 
@@ -509,18 +357,13 @@ async def save_uploaded_file(
 # HEALTH
 # ============================================================
 
-@router.get(
-    "/health"
-)
+@router.get("/health")
 def api_health():
 
     return {
-
-        "status":
-            "healthy",
-
-        "service":
-            "InsightFlow Analytics API"
+        "status": "healthy",
+        "service": "InsightFlow Analytics API",
+        "active_datasets": dataset_manager.count()
     }
 
 
@@ -528,9 +371,7 @@ def api_health():
 # PREPARE DATASET
 # ============================================================
 
-@router.post(
-    "/datasets"
-)
+@router.post("/datasets")
 async def prepare_dataset(
     file: UploadFile = File(...)
 ):
@@ -539,34 +380,16 @@ async def prepare_dataset(
         original_filename,
         stored_filename,
         file_path
-    ) = await save_uploaded_file(
-        file
-    )
-
-
-    workflow = None
-
+    ) = await save_uploaded_file(file)
 
     try:
 
-        workflow = (
-            AnalyticsWorkflow()
+        workflow = AnalyticsWorkflow()
+
+        result = workflow.prepare_dataset(
+            file_path=str(file_path),
+            original_filename=original_filename
         )
-
-
-        result = (
-            workflow.prepare_dataset(
-
-                file_path=
-                    str(
-                        file_path
-                    ),
-
-                original_filename=
-                    original_filename
-            )
-        )
-
 
         if not result.get(
             "success",
@@ -574,37 +397,39 @@ async def prepare_dataset(
         ):
 
             raise HTTPException(
-
                 status_code=500,
-
                 detail={
-
                     "message":
                         "Dataset preparation failed.",
 
                     "error":
-                        result.get(
-                            "error"
-                        )
+                        result.get("error")
                 }
             )
 
-
-        before_score = (
-            result.get(
-                "before_score"
-            )
+        dataset_id = result.get(
+            "dataset_id"
         )
 
-        after_score = (
-            result.get(
-                "after_score"
+        if not dataset_id:
+
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Dataset preparation completed "
+                    "without creating a dataset session."
+                )
             )
+
+        before_score = result.get(
+            "before_score"
         )
 
+        after_score = result.get(
+            "after_score"
+        )
 
         improvement = None
-
 
         if (
             before_score is not None
@@ -613,14 +438,9 @@ async def prepare_dataset(
         ):
 
             improvement = round(
-
-                after_score
-                -
-                before_score,
-
+                after_score - before_score,
                 2
             )
-
 
         response = {
 
@@ -628,9 +448,7 @@ async def prepare_dataset(
                 True,
 
             "dataset_id":
-                result.get(
-                    "dataset_id"
-                ),
+                dataset_id,
 
             "file": {
 
@@ -700,65 +518,84 @@ async def prepare_dataset(
                 result.get(
                     "eda_charts",
                     []
+                ),
+
+            "statistical_findings":
+                result.get(
+                    "statistical_findings",
+                    []
                 )
         }
-
 
         return make_json_safe(
             response
         )
 
+    except HTTPException:
+        raise
 
-    finally:
+    except Exception as error:
 
-        if workflow is not None:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message":
+                    "Unexpected dataset preparation error.",
 
-            try:
-
-                workflow.close()
-
-            except Exception:
-
-                pass
+                "error":
+                    str(error)
+            }
+        ) from error
 
 
 # ============================================================
 # GET DATASET
 # ============================================================
 
-@router.get(
-    "/datasets/{dataset_id}"
-)
+@router.get("/datasets/{dataset_id}")
 def get_dataset(
-    dataset_id
+    dataset_id: str
 ):
 
-    workflow = (
-        AnalyticsWorkflow()
+    """
+    Retrieve a prepared dataset session.
+
+    Dataset sessions belong to DatasetManager, not
+    AnalyticsWorkflow.
+    """
+
+    dataset_id = (
+        dataset_id.strip()
+        if isinstance(
+            dataset_id,
+            str
+        )
+        else ""
     )
 
+    if not dataset_id:
+
+        raise HTTPException(
+            status_code=400,
+            detail="Dataset ID cannot be empty."
+        )
 
     try:
 
         dataset_info = (
-            workflow.get_dataset_info(
+            dataset_manager.get_dataset_info(
                 dataset_id
             )
         )
 
-
         if dataset_info is None:
 
             raise HTTPException(
-
                 status_code=404,
-
                 detail=(
-                    "Dataset session "
-                    "not found."
+                    "Dataset session not found."
                 )
             )
-
 
         return make_json_safe({
 
@@ -769,10 +606,21 @@ def get_dataset(
                 dataset_info
         })
 
+    except HTTPException:
+        raise
 
-    finally:
+    except Exception as error:
 
-        workflow.close()
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message":
+                    "Could not retrieve dataset session.",
+
+                "error":
+                    str(error)
+            }
+        ) from error
 
 
 # ============================================================
@@ -793,50 +641,56 @@ def ask_dataset(
     ):
 
         raise HTTPException(
-
             status_code=400,
-
-            detail=(
-                "Question must be a string."
-            )
+            detail="Question must be a string."
         )
 
-
-    question = (
-        question.strip()
-    )
-
+    question = question.strip()
 
     if not question:
 
         raise HTTPException(
-
             status_code=400,
-
-            detail=(
-                "Question cannot be empty."
-            )
+            detail="Question cannot be empty."
         )
 
-
-    workflow = (
-        AnalyticsWorkflow()
+    dataset_id = (
+        dataset_id.strip()
+        if isinstance(
+            dataset_id,
+            str
+        )
+        else ""
     )
 
+    if not dataset_id:
+
+        raise HTTPException(
+            status_code=400,
+            detail="Dataset ID cannot be empty."
+        )
+
+    # --------------------------------------------------------
+    # CHECK SESSION BEFORE RUNNING ANALYTICS
+    # --------------------------------------------------------
+
+    if not dataset_manager.exists(
+        dataset_id
+    ):
+
+        raise HTTPException(
+            status_code=404,
+            detail="Dataset session not found."
+        )
 
     try:
 
-        result = (
-            workflow.ask_dataset(
+        workflow = AnalyticsWorkflow()
 
-                dataset_id=
-                    dataset_id,
-
-                question=
-                    question
-            )
+        result = workflow.ask_dataset(
+            dataset_id=dataset_id,
+            question=question
         )
-
 
         # ----------------------------------------------------
         # TRUE WORKFLOW FAILURE
@@ -847,12 +701,9 @@ def ask_dataset(
             False
         ):
 
-            error = (
-                result.get(
-                    "error"
-                )
+            error = result.get(
+                "error"
             )
-
 
             if (
                 error
@@ -861,25 +712,15 @@ def ask_dataset(
             ):
 
                 raise HTTPException(
-
                     status_code=404,
-
-                    detail=
-                        error
+                    detail=error
                 )
 
-
             raise HTTPException(
-
                 status_code=500,
-
                 detail={
-
                     "message":
-                        (
-                            "Dataset question "
-                            "failed."
-                        ),
+                        "Dataset question failed.",
 
                     "error":
                         error,
@@ -901,35 +742,19 @@ def ask_dataset(
                 }
             )
 
-
         # ----------------------------------------------------
         # SQL RESULT
         # ----------------------------------------------------
 
-        sql_records = (
-            dataframe_to_records(
-
-                result.get(
-                    "sql_result"
-                )
-            )
-        )
-
-
-        insight_source = (
+        sql_records = dataframe_to_records(
             result.get(
-                "insight_source"
+                "sql_result"
             )
         )
 
-
-        insight_success = (
-            result.get(
-                "insight_success",
-                False
-            )
+        insight_source = result.get(
+            "insight_source"
         )
-
 
         # ----------------------------------------------------
         # RESPONSE
@@ -979,6 +804,12 @@ def ask_dataset(
                     "insight"
                 ),
 
+            "statistical_findings":
+                result.get(
+                    "statistical_findings",
+                    []
+                ),
+
             "insight_status": {
 
                 "available":
@@ -1007,19 +838,25 @@ def ask_dataset(
             }
         }
 
-
-        # Do NOT expose the giant Gemini quota
-        # error to the normal frontend response.
-
-
         return make_json_safe(
             response
         )
 
+    except HTTPException:
+        raise
 
-    finally:
+    except Exception as error:
 
-        workflow.close()
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message":
+                    "Unexpected dataset question error.",
+
+                "error":
+                    str(error)
+            }
+        ) from error
 
 
 # ============================================================
@@ -1030,35 +867,45 @@ def ask_dataset(
     "/datasets/{dataset_id}"
 )
 def delete_dataset(
-    dataset_id
+    dataset_id: str
 ):
 
-    workflow = (
-        AnalyticsWorkflow()
+    """
+    Delete a dataset directly from DatasetManager.
+    """
+
+    dataset_id = (
+        dataset_id.strip()
+        if isinstance(
+            dataset_id,
+            str
+        )
+        else ""
     )
 
+    if not dataset_id:
+
+        raise HTTPException(
+            status_code=400,
+            detail="Dataset ID cannot be empty."
+        )
 
     try:
 
         deleted = (
-            workflow.delete_dataset(
+            dataset_manager.delete_dataset(
                 dataset_id
             )
         )
 
-
         if not deleted:
 
             raise HTTPException(
-
                 status_code=404,
-
                 detail=(
-                    "Dataset session "
-                    "not found."
+                    "Dataset session not found."
                 )
             )
-
 
         return {
 
@@ -1069,30 +916,43 @@ def delete_dataset(
                 dataset_id,
 
             "message":
-                (
-                    "Dataset session deleted."
-                )
+                "Dataset session deleted."
         }
 
+    except HTTPException:
+        raise
 
-    finally:
+    except Exception as error:
 
-        workflow.close()
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message":
+                    "Could not delete dataset session.",
+
+                "error":
+                    str(error)
+            }
+        ) from error
 
 
 # ============================================================
 # LEGACY ANALYZE
 # ============================================================
 
-@router.post(
-    "/analyze"
-)
+@router.post("/analyze")
 async def analyze_dataset(
-
     file: UploadFile = File(...),
-
     question: str = Form(...)
 ):
+
+    """
+    Legacy one-shot endpoint.
+
+    Upload dataset -> prepare -> ask question -> return result.
+
+    Kept for backward compatibility.
+    """
 
     if not isinstance(
         question,
@@ -1100,64 +960,82 @@ async def analyze_dataset(
     ):
 
         raise HTTPException(
-
             status_code=400,
-
-            detail=(
-                "Question must be a string."
-            )
+            detail="Question must be a string."
         )
 
-
-    question = (
-        question.strip()
-    )
-
+    question = question.strip()
 
     if not question:
 
         raise HTTPException(
-
             status_code=400,
-
-            detail=(
-                "Question cannot be empty."
-            )
+            detail="Question cannot be empty."
         )
-
 
     (
         original_filename,
         unique_filename,
         file_path
-    ) = await save_uploaded_file(
-        file
-    )
-
-
-    workflow = None
-
+    ) = await save_uploaded_file(file)
 
     try:
 
-        workflow = (
-            AnalyticsWorkflow()
-        )
+        workflow = AnalyticsWorkflow()
 
+        # ----------------------------------------------------
+        # PREPARE DATASET
+        # ----------------------------------------------------
 
-        result = (
-            workflow.run(
-
-                file_path=
-                    str(
-                        file_path
-                    ),
-
-                question=
-                    question
+        preparation_result = (
+            workflow.prepare_dataset(
+                file_path=str(file_path),
+                original_filename=original_filename
             )
         )
 
+        if not preparation_result.get(
+            "success",
+            False
+        ):
+
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "message":
+                        "Dataset preparation failed.",
+
+                    "error":
+                        preparation_result.get(
+                            "error"
+                        )
+                }
+            )
+
+        dataset_id = (
+            preparation_result.get(
+                "dataset_id"
+            )
+        )
+
+        if not dataset_id:
+
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Dataset preparation completed "
+                    "without creating a session."
+                )
+            )
+
+        # ----------------------------------------------------
+        # ASK QUESTION
+        # ----------------------------------------------------
+
+        result = workflow.ask_dataset(
+            dataset_id=dataset_id,
+            question=question
+        )
 
         if not result.get(
             "success",
@@ -1165,11 +1043,8 @@ async def analyze_dataset(
         ):
 
             raise HTTPException(
-
                 status_code=500,
-
                 detail={
-
                     "message":
                         "Analytics workflow failed.",
 
@@ -1195,33 +1070,37 @@ async def analyze_dataset(
                 }
             )
 
+        # ----------------------------------------------------
+        # DATASET INFORMATION
+        # ----------------------------------------------------
+
+        dataset_info = (
+            dataset_manager.get_dataset_info(
+                dataset_id
+            )
+        )
 
         sql_records = (
             dataframe_to_records(
-
                 result.get(
                     "sql_result"
                 )
             )
         )
 
-
         before_score = (
-            result.get(
+            preparation_result.get(
                 "before_score"
             )
         )
 
-
         after_score = (
-            result.get(
+            preparation_result.get(
                 "after_score"
             )
         )
 
-
         improvement = None
-
 
         if (
             before_score is not None
@@ -1230,19 +1109,21 @@ async def analyze_dataset(
         ):
 
             improvement = round(
-
-                after_score
-                -
-                before_score,
-
+                after_score - before_score,
                 2
             )
 
+        # ----------------------------------------------------
+        # RESPONSE
+        # ----------------------------------------------------
 
         response = {
 
             "success":
                 True,
+
+            "dataset_id":
+                dataset_id,
 
             "file": {
 
@@ -1259,26 +1140,24 @@ async def analyze_dataset(
             "dataset": {
 
                 "original_rows":
-                    len(
-                        result[
-                            "raw_df"
-                        ]
+                    preparation_result.get(
+                        "original_rows"
                     ),
 
                 "cleaned_rows":
-                    len(
-                        result[
-                            "cleaned_df"
-                        ]
+                    preparation_result.get(
+                        "cleaned_rows"
                     ),
 
                 "columns":
-                    list(
-                        result[
-                            "cleaned_df"
-                        ].columns
+                    preparation_result.get(
+                        "columns",
+                        []
                     )
             },
+
+            "dataset_info":
+                dataset_info,
 
             "quality": {
 
@@ -1292,33 +1171,39 @@ async def analyze_dataset(
                     improvement,
 
                 "cleaning_log":
-                    result.get(
+                    preparation_result.get(
                         "cleaning_log",
                         []
                     ),
 
                 "quality_report":
-                    result.get(
-                        "cleaned_quality_report",
+                    preparation_result.get(
+                        "quality_report",
                         {}
                     ),
 
                 "anomalies":
-                    result.get(
-                        "cleaned_anomalies",
+                    preparation_result.get(
+                        "anomalies",
                         {}
                     )
             },
 
             "eda":
-                result.get(
+                preparation_result.get(
                     "eda_results",
                     {}
                 ),
 
             "visualizations":
-                result.get(
+                preparation_result.get(
                     "eda_charts",
+                    []
+                ),
+
+            "statistical_findings":
+                preparation_result.get(
+                    "statistical_findings",
                     []
                 ),
 
@@ -1389,20 +1274,22 @@ async def analyze_dataset(
             }
         }
 
-
         return make_json_safe(
             response
         )
 
+    except HTTPException:
+        raise
 
-    finally:
+    except Exception as error:
 
-        if workflow is not None:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message":
+                    "Unexpected analytics workflow error.",
 
-            try:
-
-                workflow.close()
-
-            except Exception:
-
-                pass
+                "error":
+                    str(error)
+            }
+        ) from error
