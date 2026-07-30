@@ -146,7 +146,7 @@ class VisualizationService:
 
         numeric_ratio = converted.notna().mean()
 
-        return numeric_ratio >= 0.60
+        return bool(numeric_ratio >= 0.60)
     
     
 
