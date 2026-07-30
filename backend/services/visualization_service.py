@@ -122,12 +122,33 @@ class VisualizationService:
     # ========================================================
     # TYPE HELPERS
     # ========================================================
-
+    
     def _is_numeric(self, series):
 
-        return pd.api.types.is_numeric_dtype(
-            series
+        
+        """
+        Detect true numeric columns AND object/string columns
+        whose values are mostly numeric.
+        """
+
+        if pd.api.types.is_numeric_dtype(series):
+            return True
+
+        non_null = series.dropna()
+
+        if non_null.empty:
+            return False
+
+        converted = pd.to_numeric(
+            non_null,
+            errors="coerce"
         )
+
+        numeric_ratio = converted.notna().mean()
+
+        return numeric_ratio >= 0.60
+    
+    
 
     def _is_datetime(self, series):
 
@@ -1630,7 +1651,7 @@ class VisualizationService:
             average
         )
     # ========================================================
-# QUESTION COLUMN DETECTION
+    # QUESTION COLUMN DETECTION
 # ========================================================
 
     def _find_question_columns(
@@ -1705,7 +1726,7 @@ class VisualizationService:
         ]
 
     # ========================================================
-# VISUALIZATION SOURCE SELECTION
+    # VISUALIZATION SOURCE SELECTION
 # ========================================================
 
     def _select_visualization_source(
@@ -1747,9 +1768,7 @@ class VisualizationService:
     # RESULT CHART
     # ========================================================
 
-    # ========================================================
-# RESULT CHART
-# ========================================================
+
 
     def generate_result_chart(
         self,
@@ -1858,59 +1877,55 @@ class VisualizationService:
         # ====================================================
         # CLASSIFY WORKING DATASET COLUMNS
         # ====================================================
+        
+        numeric_columns = []
+        datetime_columns = []
+        categorical_columns = []
 
-        if (
-            data_source == "source_dataset"
-            and schema
-        ):
+        for column in working_df.columns:
 
-            groups = self._collect_columns(
-                working_df,
-                schema
+            series = working_df[column]
+
+            semantic_type = self._semantic_type(
+                schema,
+                column,
+                series
             )
 
-            numeric_columns = list(
-                groups["Numerical"]
-            )
+            # Datetime first
+            if (
+                semantic_type == "Datetime"
+                or self._is_datetime(series)
+            ):
+                datetime_columns.append(column)
+                continue
 
-            datetime_columns = list(
-                groups["Datetime"]
-            )
+            # Identifier should not accidentally become a metric
+            if semantic_type == "Identifier":
+                continue
 
-            categorical_columns = (
-                list(groups["Categorical"])
-                +
-                list(groups["Boolean"])
-            )
+            # Important:
+            # actual data can override incorrect Text/Categorical
+            # schema classification when values are mostly numeric.
+            if (
+                semantic_type == "Numerical"
+                or self._is_numeric(series)
+            ):
+                numeric_columns.append(column)
+                continue
 
-        else:
+            if semantic_type in {
+                "Categorical",
+                "Boolean"
+            }:
+                categorical_columns.append(column)
+                continue
 
-            numeric_columns = []
-            datetime_columns = []
-            categorical_columns = []
-
-            for column in working_df.columns:
-
-                series = working_df[column]
-
-                if self._is_datetime(series):
-
-                    datetime_columns.append(
-                        column
-                    )
-
-                elif self._is_numeric(series):
-
-                    numeric_columns.append(
-                        column
-                    )
-
-                else:
-
-                    categorical_columns.append(
-                        column
-                    )
-
+            # Text with reasonable cardinality may still be useful
+            # as a grouping variable.
+            if self._usable_category(series):
+                categorical_columns.append(column)
+        
         # ====================================================
         # FIND COLUMNS MENTIONED BY USER
         # ====================================================
@@ -1973,40 +1988,7 @@ class VisualizationService:
                     mentioned_categories[1]
                 )
 
-            elif (
-                category_column
-                and len(categorical_columns) >= 2
-            ):
-
-                remaining_categories = [
-                    column
-                    for column in categorical_columns
-                    if column != category_column
-                ]
-
-                if remaining_categories:
-
-                    # Only automatically use a color grouping
-                    # when the question implies it.
-                    question_lower = (
-                        question.lower()
-                        if isinstance(question, str)
-                        else ""
-                    )
-
-                    if any(
-                        phrase in question_lower
-                        for phrase in [
-                            "color by",
-                            "colored by",
-                            "colour by",
-                            "grouped by",
-                            "split by"
-                        ]
-                    ):
-                        color_column = (
-                            remaining_categories[0]
-                        )
+            
 
             selected_columns = [
                 numeric_column
