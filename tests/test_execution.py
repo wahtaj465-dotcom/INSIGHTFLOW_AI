@@ -9,15 +9,29 @@ from backend.orchestration.nodes.execution import (
 
 
 # ============================================================
+# HELPER
+# ============================================================
+
+def ready_dependencies():
+    """
+    Dependency resolver response for a tool whose
+    dependencies are fully satisfied.
+    """
+
+    return {
+        "ready": True,
+        "missing_dependencies": [],
+    }
+
+
+# ============================================================
 # TEST 1
 # Executor uses registry input metadata
 # ============================================================
 
 def test_executor_builds_inputs_from_registry():
 
-    fake_tool = (
-        MagicMock()
-    )
+    fake_tool = MagicMock()
 
     fake_tool.invoke.return_value = {
         "success": True,
@@ -29,9 +43,7 @@ def test_executor_builds_inputs_from_registry():
     }
 
     fake_definition = {
-
-        "tool":
-            fake_tool,
+        "tool": fake_tool,
 
         "inputs": {
             "dataset_id":
@@ -48,7 +60,6 @@ def test_executor_builds_inputs_from_registry():
     }
 
     state = {
-
         "dataset_id":
             "dataset_123",
 
@@ -69,6 +80,10 @@ def test_executor_builds_inputs_from_registry():
         "backend.orchestration.nodes.execution."
         "get_tool_definition",
         return_value=fake_definition,
+    ), patch(
+        "backend.orchestration.nodes.execution."
+        "check_tool_dependencies",
+        return_value=ready_dependencies(),
     ):
 
         result = tool_executor_node(
@@ -89,8 +104,9 @@ def test_executor_builds_inputs_from_registry():
         }
     ]
 
-    assert "sql" in (
-        result["executed_tools"]
+    assert (
+        "sql"
+        in result["executed_tools"]
     )
 
 
@@ -101,9 +117,7 @@ def test_executor_builds_inputs_from_registry():
 
 def test_executor_promotes_outputs():
 
-    fake_tool = (
-        MagicMock()
-    )
+    fake_tool = MagicMock()
 
     fake_tool.invoke.return_value = {
         "success": True,
@@ -119,9 +133,7 @@ def test_executor_promotes_outputs():
     }
 
     fake_definition = {
-
-        "tool":
-            fake_tool,
+        "tool": fake_tool,
 
         "inputs": {
             "dataset_id":
@@ -141,7 +153,6 @@ def test_executor_promotes_outputs():
     }
 
     state = {
-
         "dataset_id":
             "dataset_123",
 
@@ -162,6 +173,10 @@ def test_executor_promotes_outputs():
         "backend.orchestration.nodes.execution."
         "get_tool_definition",
         return_value=fake_definition,
+    ), patch(
+        "backend.orchestration.nodes.execution."
+        "check_tool_dependencies",
+        return_value=ready_dependencies(),
     ):
 
         result = tool_executor_node(
@@ -188,9 +203,7 @@ def test_executor_promotes_outputs():
 
 def test_executor_supports_future_tool():
 
-    fake_tool = (
-        MagicMock()
-    )
+    fake_tool = MagicMock()
 
     fake_tool.invoke.return_value = {
         "success": True,
@@ -203,9 +216,7 @@ def test_executor_supports_future_tool():
     }
 
     fake_definition = {
-
-        "tool":
-            fake_tool,
+        "tool": fake_tool,
 
         "inputs": {
             "dataset_id":
@@ -222,7 +233,6 @@ def test_executor_supports_future_tool():
     }
 
     state = {
-
         "dataset_id":
             "dataset_123",
 
@@ -246,6 +256,10 @@ def test_executor_supports_future_tool():
         "backend.orchestration.nodes.execution."
         "get_tool_definition",
         return_value=fake_definition,
+    ), patch(
+        "backend.orchestration.nodes.execution."
+        "check_tool_dependencies",
+        return_value=ready_dependencies(),
     ):
 
         result = tool_executor_node(
@@ -282,9 +296,7 @@ def test_executor_supports_future_tool():
 
 def test_executor_records_tool_failure():
 
-    fake_tool = (
-        MagicMock()
-    )
+    fake_tool = MagicMock()
 
     fake_tool.invoke.return_value = {
         "success": False,
@@ -292,9 +304,7 @@ def test_executor_records_tool_failure():
     }
 
     fake_definition = {
-
-        "tool":
-            fake_tool,
+        "tool": fake_tool,
 
         "inputs": {
             "dataset_id":
@@ -308,7 +318,6 @@ def test_executor_records_tool_failure():
     }
 
     state = {
-
         "dataset_id":
             "dataset_123",
 
@@ -326,6 +335,10 @@ def test_executor_records_tool_failure():
         "backend.orchestration.nodes.execution."
         "get_tool_definition",
         return_value=fake_definition,
+    ), patch(
+        "backend.orchestration.nodes.execution."
+        "check_tool_dependencies",
+        return_value=ready_dependencies(),
     ):
 
         result = tool_executor_node(
@@ -363,7 +376,6 @@ def test_executor_records_tool_failure():
 def test_executor_handles_unknown_tool():
 
     state = {
-
         "current_step":
             "unknown_tool",
 
@@ -412,9 +424,7 @@ def test_executor_handles_unknown_tool():
 
 def test_executor_handles_tool_exception():
 
-    fake_tool = (
-        MagicMock()
-    )
+    fake_tool = MagicMock()
 
     fake_tool.invoke.side_effect = (
         RuntimeError(
@@ -423,9 +433,7 @@ def test_executor_handles_tool_exception():
     )
 
     fake_definition = {
-
-        "tool":
-            fake_tool,
+        "tool": fake_tool,
 
         "inputs": {
             "dataset_id":
@@ -436,7 +444,6 @@ def test_executor_handles_tool_exception():
     }
 
     state = {
-
         "dataset_id":
             "dataset_123",
 
@@ -454,6 +461,10 @@ def test_executor_handles_tool_exception():
         "backend.orchestration.nodes.execution."
         "get_tool_definition",
         return_value=fake_definition,
+    ), patch(
+        "backend.orchestration.nodes.execution."
+        "check_tool_dependencies",
+        return_value=ready_dependencies(),
     ):
 
         result = tool_executor_node(
@@ -476,3 +487,387 @@ def test_executor_handles_tool_exception():
         ["success"]
         is False
     )
+
+
+# ============================================================
+# TEST 7
+# Executor checks dependencies before execution
+# ============================================================
+
+def test_executor_checks_dependencies():
+
+    fake_tool = MagicMock()
+
+    fake_tool.invoke.return_value = {
+        "success": True,
+        "chart": {
+            "type": "bar"
+        },
+    }
+
+    fake_definition = {
+        "tool": fake_tool,
+
+        "inputs": {
+            "sql_result":
+                "sql_result",
+        },
+
+        "outputs": {
+            "chart":
+                "visualization",
+        },
+
+        "dependencies": [
+            "sql"
+        ],
+    }
+
+    state = {
+        "current_step":
+            "visualization",
+
+        "sql_result": [
+            {
+                "city": "Delhi",
+                "sales": 100
+            }
+        ],
+
+        "executed_tools": [
+            "sql"
+        ],
+
+        "tool_results": {
+            "sql": {
+                "success": True,
+            }
+        },
+
+        "trace": [],
+    }
+
+    with patch(
+        "backend.orchestration.nodes.execution."
+        "get_tool_definition",
+        return_value=fake_definition,
+    ), patch(
+        "backend.orchestration.nodes.execution."
+        "check_tool_dependencies",
+        return_value=ready_dependencies(),
+    ) as mock_dependencies:
+
+        result = tool_executor_node(
+            state
+        )
+
+    mock_dependencies.assert_called_once_with(
+        "visualization",
+        state,
+    )
+
+    fake_tool.invoke.assert_called_once()
+
+    assert (
+        "visualization"
+        in result["executed_tools"]
+    )
+
+    assert (
+        result["visualization"]
+        ==
+        {
+            "type": "bar"
+        }
+    )
+
+
+# ============================================================
+# TEST 8
+# Missing dependency blocks execution
+# ============================================================
+
+def test_executor_blocks_missing_dependency():
+
+    fake_tool = MagicMock()
+
+    fake_definition = {
+        "tool": fake_tool,
+
+        "inputs": {
+            "sql_result":
+                "sql_result",
+        },
+
+        "outputs": {
+            "chart":
+                "visualization",
+        },
+
+        "dependencies": [
+            "sql"
+        ],
+    }
+
+    state = {
+        "current_step":
+            "visualization",
+
+        "executed_tools": [],
+
+        "tool_results": {},
+
+        "trace": [],
+    }
+
+    with patch(
+        "backend.orchestration.nodes.execution."
+        "get_tool_definition",
+        return_value=fake_definition,
+    ), patch(
+        "backend.orchestration.nodes.execution."
+        "check_tool_dependencies",
+        return_value={
+            "ready": False,
+            "missing_dependencies": [
+                "sql"
+            ],
+        },
+    ):
+
+        result = tool_executor_node(
+            state
+        )
+
+    # Most important assertion:
+    # blocked tools must never execute.
+    fake_tool.invoke.assert_not_called()
+
+    assert (
+        result["failed_tool"]
+        == "visualization"
+    )
+
+    assert (
+        result["tool_results"]
+        ["visualization"]
+        ["success"]
+        is False
+    )
+
+    assert (
+        result["tool_results"]
+        ["visualization"]
+        ["missing_dependencies"]
+        ==
+        ["sql"]
+    )
+
+    assert (
+        "visualization"
+        not in result["executed_tools"]
+    )
+
+    assert (
+        result["trace"][-1]["status"]
+        == "blocked"
+    )
+
+    assert (
+        result["trace"][-1]
+        ["missing_dependencies"]
+        ==
+        ["sql"]
+    )
+
+
+# ============================================================
+# TEST 9
+# Failed dependency blocks execution
+# ============================================================
+
+def test_executor_blocks_failed_dependency():
+
+    fake_tool = MagicMock()
+
+    fake_definition = {
+        "tool": fake_tool,
+
+        "inputs": {
+            "sql_result":
+                "sql_result",
+        },
+
+        "outputs": {
+            "chart":
+                "visualization",
+        },
+
+        "dependencies": [
+            "sql"
+        ],
+    }
+
+    state = {
+        "current_step":
+            "visualization",
+
+        "executed_tools": [],
+
+        "tool_results": {
+            "sql": {
+                "success": False,
+                "error": "SQL failed.",
+            }
+        },
+
+        "trace": [],
+    }
+
+    with patch(
+        "backend.orchestration.nodes.execution."
+        "get_tool_definition",
+        return_value=fake_definition,
+    ), patch(
+        "backend.orchestration.nodes.execution."
+        "check_tool_dependencies",
+        return_value={
+            "ready": False,
+            "missing_dependencies": [
+                "sql"
+            ],
+        },
+    ):
+
+        result = tool_executor_node(
+            state
+        )
+
+    fake_tool.invoke.assert_not_called()
+
+    assert (
+        result["failed_tool"]
+        == "visualization"
+    )
+
+    assert (
+        result["tool_results"]
+        ["visualization"]
+        ["success"]
+        is False
+    )
+
+    assert (
+        result["tool_results"]
+        ["visualization"]
+        ["missing_dependencies"]
+        ==
+        ["sql"]
+    )
+
+    assert (
+        result["trace"][-1]["status"]
+        == "blocked"
+    )
+
+
+# ============================================================
+# TEST 10
+# Successful dependencies allow execution
+# ============================================================
+
+def test_executor_runs_when_dependencies_satisfied():
+
+    fake_tool = MagicMock()
+
+    fake_tool.invoke.return_value = {
+        "success": True,
+
+        "forecast": [
+            120,
+            140,
+            160,
+        ],
+    }
+
+    fake_definition = {
+        "tool": fake_tool,
+
+        "inputs": {
+            "historical_data":
+                "sql_result",
+        },
+
+        "outputs": {
+            "forecast":
+                "forecast_result",
+        },
+
+        "dependencies": [
+            "sql"
+        ],
+    }
+
+    state = {
+        "current_step":
+            "forecasting",
+
+        "sql_result": [
+            80,
+            90,
+            100,
+        ],
+
+        "executed_tools": [
+            "sql"
+        ],
+
+        "tool_results": {
+            "sql": {
+                "success": True,
+            }
+        },
+
+        "trace": [],
+    }
+
+    with patch(
+        "backend.orchestration.nodes.execution."
+        "get_tool_definition",
+        return_value=fake_definition,
+    ), patch(
+        "backend.orchestration.nodes.execution."
+        "check_tool_dependencies",
+        return_value=ready_dependencies(),
+    ):
+
+        result = tool_executor_node(
+            state
+        )
+
+    fake_tool.invoke.assert_called_once_with({
+        "historical_data": [
+            80,
+            90,
+            100,
+        ]
+    })
+
+    assert (
+        result["forecast_result"]
+        ==
+        [
+            120,
+            140,
+            160,
+        ]
+    )
+
+    assert (
+        "forecasting"
+        in result["executed_tools"]
+    )
+
+    assert result["failed_tool"] is None
+
+    assert result["error"] is None

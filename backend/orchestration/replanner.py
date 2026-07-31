@@ -8,8 +8,11 @@ from backend.orchestration.planner import (
 )
 
 from backend.orchestration.tool_registry import (
-    get_available_tools,
     get_tool_descriptions,
+)
+
+from backend.orchestration.plan_resolver import (
+    resolve_plan_dependencies,
 )
 
 from backend.services.llm_service import (
@@ -86,15 +89,18 @@ def _build_replanner_prompt(
     executed_tools: list[str],
     failed_tool: str | None,
     last_tool_error: str | None,
+    tool_catalog: str | None = None,
 ) -> str:
     """
     Build the recovery prompt using the dynamic
     tool registry.
     """
 
-    tool_catalog = (
-        _build_replanner_tool_catalog()
-    )
+    if tool_catalog is None:
+
+        tool_catalog = (
+            _build_replanner_tool_catalog()
+        )
 
     return f"""
 You are the recovery planner for an autonomous
@@ -132,13 +138,14 @@ RULES:
 
 3. Use only tools from the AVAILABLE TOOL CATALOG.
 
-4. Do not repeat successfully executed tools
-unless they must be executed again because a downstream
-dependency requires new output.
+4. Do not repeat successfully executed tools unless
+they must be executed again because recovery requires
+new output.
 
 5. You may retry the failed tool if appropriate.
 
-6. Preserve tool dependencies described in the catalog.
+6. Tool dependencies will be expanded automatically
+after the recovery plan is generated.
 
 7. Keep the recovery plan minimal.
 
@@ -155,6 +162,26 @@ Return exactly:
 
 
 # ============================================================
+# GET CURRENT AVAILABLE TOOLS
+# ============================================================
+
+def _get_replanner_available_tools(
+    tool_descriptions: dict,
+) -> set[str]:
+    """
+    Derive available tool names from the same registry
+    metadata used to build the replanner prompt.
+
+    This keeps prompt generation and validation based
+    on one consistent registry snapshot.
+    """
+
+    return set(
+        tool_descriptions.keys()
+    )
+
+
+# ============================================================
 # REPLANNER NODE
 # ============================================================
 
@@ -163,6 +190,18 @@ def replanner_node(
 ) -> dict:
     """
     Create a revised execution plan after a tool failure.
+
+    Flow:
+
+    LLM recovery selection
+            ↓
+    registry validation
+            ↓
+    dependency expansion
+            ↓
+    remove completed tools
+            ↓
+    recovery execution
     """
 
     # ========================================================
@@ -211,8 +250,61 @@ def replanner_node(
         + 1
     )
 
-    available_tools = set(
-        get_available_tools()
+    # ========================================================
+    # LOAD REGISTRY METADATA ONCE
+    # ========================================================
+
+    tool_descriptions = (
+        get_tool_descriptions()
+    )
+
+    available_tools = (
+        _get_replanner_available_tools(
+            tool_descriptions
+        )
+    )
+
+    # Build the exact catalog from the same snapshot.
+
+    catalog = []
+
+    for (
+        tool_name,
+        metadata
+    ) in tool_descriptions.items():
+
+        catalog.append({
+            "name":
+                tool_name,
+
+            "description":
+                metadata.get(
+                    "description",
+                    ""
+                ),
+
+            "inputs":
+                metadata.get(
+                    "inputs",
+                    {}
+                ),
+
+            "outputs":
+                metadata.get(
+                    "outputs",
+                    {}
+                ),
+
+            "dependencies":
+                metadata.get(
+                    "dependencies",
+                    []
+                ),
+        })
+
+    tool_catalog = json.dumps(
+        catalog,
+        indent=2
     )
 
     # ========================================================
@@ -227,6 +319,7 @@ def replanner_node(
             executed_tools=executed_tools,
             failed_tool=failed_tool,
             last_tool_error=last_tool_error,
+            tool_catalog=tool_catalog,
         )
 
         llm_service = (
@@ -246,30 +339,46 @@ def replanner_node(
         )
 
         # ----------------------------------------------------
-        # Validate against registry
+        # Validate selected capabilities
         # ----------------------------------------------------
 
-        remaining_tools = [
+        requested_tools = [
             tool_name
             for tool_name in revised_plan.tools
-            if (
-                tool_name in available_tools
-                and
-                tool_name not in executed_tools
-            )
+            if tool_name in available_tools
         ]
 
-        remaining_tools = list(
+        requested_tools = list(
             dict.fromkeys(
-                remaining_tools
+                requested_tools
             )
         )
 
-        if not remaining_tools:
+        if not requested_tools:
 
             raise ValueError(
                 "Replanner returned no valid recovery tools."
             )
+
+        # ----------------------------------------------------
+        # Expand dependencies
+        # ----------------------------------------------------
+
+        resolved_plan = (
+            resolve_plan_dependencies(
+                requested_tools
+            )
+        )
+
+        # ----------------------------------------------------
+        # Remove tools that already succeeded
+        # ----------------------------------------------------
+
+        remaining_tools = [
+            tool_name
+            for tool_name in resolved_plan
+            if tool_name not in executed_tools
+        ]
 
         planner_source = (
             "llm"
@@ -291,21 +400,43 @@ def replanner_node(
             )
         )
 
-        remaining_tools = [
+        requested_tools = [
             tool_name
             for tool_name in fallback_plan.tools
-            if (
-                tool_name in available_tools
-                and
-                tool_name not in executed_tools
-            )
+            if tool_name in available_tools
         ]
 
-        remaining_tools = list(
+        requested_tools = list(
             dict.fromkeys(
-                remaining_tools
+                requested_tools
             )
         )
+
+        if requested_tools:
+
+            try:
+
+                resolved_plan = (
+                    resolve_plan_dependencies(
+                        requested_tools
+                    )
+                )
+
+            except Exception:
+
+                resolved_plan = (
+                    requested_tools
+                )
+
+        else:
+
+            resolved_plan = []
+
+        remaining_tools = [
+            tool_name
+            for tool_name in resolved_plan
+            if tool_name not in executed_tools
+        ]
 
         planner_source = (
             "fallback"
@@ -317,7 +448,17 @@ def replanner_node(
         )
 
     # ========================================================
-    # ENSURE FAILED TOOL CAN BE RETRIED
+    # REMOVE DUPLICATES
+    # ========================================================
+
+    remaining_tools = list(
+        dict.fromkeys(
+            remaining_tools
+        )
+    )
+
+    # ========================================================
+    # RETRY FAILED TOOL IF NO ALTERNATIVE EXISTS
     # ========================================================
 
     if (
@@ -352,7 +493,7 @@ def replanner_node(
     })
 
     # ========================================================
-    # RETURN UPDATE
+    # RETURN
     # ========================================================
 
     return {

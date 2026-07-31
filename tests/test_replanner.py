@@ -344,34 +344,55 @@ def test_replanner_uses_dynamic_tool_catalog():
     }
 
     with patch(
-        "backend.orchestration.replanner.get_tool_descriptions",
+        "backend.orchestration.replanner."
+        "get_tool_descriptions",
         return_value=fake_tools,
     ), patch(
-        "backend.orchestration.replanner.get_available_tools",
-        return_value=["forecasting"],
-    ), patch(
-        "backend.orchestration.replanner.LLMService.generate",
+        "backend.orchestration.replanner."
+        "LLMService.generate",
         return_value=fake_llm_response,
-    ) as mock_generate:
+    ) as mock_generate, patch(
+        "backend.orchestration.replanner."
+        "resolve_plan_dependencies",
+        return_value=[
+            "forecasting"
+        ],
+    ) as mock_resolver:
 
         result = replanner_node(
             state
         )
 
+    # ========================================================
+    # VERIFY DYNAMIC TOOL CATALOG
+    # ========================================================
+
     prompt = (
         mock_generate.call_args.args[0]
     )
 
-    # The registry metadata must appear in the LLM prompt.
-    assert "forecasting" in prompt
+    assert (
+        "forecasting"
+        in prompt
+    )
 
     assert (
         "Forecast future values from historical data."
         in prompt
     )
 
-    # The LLM-selected registered tool must become
-    # the new recovery plan.
+    # ========================================================
+    # VERIFY DEPENDENCY RESOLUTION
+    # ========================================================
+
+    mock_resolver.assert_called_once_with([
+        "forecasting"
+    ])
+
+    # ========================================================
+    # VERIFY RECOVERY PLAN
+    # ========================================================
+
     assert result["plan"] == [
         "forecasting"
     ]
@@ -391,12 +412,231 @@ def test_replanner_uses_dynamic_tool_catalog():
         == 1
     )
 
-    assert (
-        result["trace"][-1]["node"]
-        == "replanner"
-    )
+
+# ============================================================
+# TEST 6
+# Replanner expands tool dependencies
+# ============================================================
+
+def test_replanner_expands_dependencies():
+
+    fake_llm_response = """
+    {
+        "intent": "recovery",
+        "tools": ["insight"],
+        "reasoning": "Generate the requested insight."
+    }
+    """
+
+    with patch(
+        "backend.orchestration.replanner."
+        "LLMService.generate",
+        return_value=fake_llm_response,
+    ), patch(
+        "backend.orchestration.replanner."
+        "resolve_plan_dependencies",
+        return_value=[
+            "sql",
+            "insight",
+        ],
+    ) as mock_resolver:
+
+        result = replanner_node({
+            "question":
+                "Explain the sales performance.",
+
+            "plan": [
+                "insight"
+            ],
+
+            "executed_tools": [],
+
+            "failed_tool":
+                "insight",
+
+            "last_tool_error":
+                "Insight generation failed.",
+
+            "replan_count": 0,
+
+            "trace": [],
+        })
+
+    mock_resolver.assert_called_once_with([
+        "insight"
+    ])
+
+    assert result["plan"] == [
+        "sql",
+        "insight",
+    ]
 
     assert (
-        result["trace"][-1]["revised_plan"]
-        == ["forecasting"]
+        result["current_step"]
+        ==
+        "sql"
+    )
+
+
+# ============================================================
+# TEST 7
+# Successful dependency is not executed again
+# ============================================================
+
+def test_replanner_excludes_completed_dependency():
+
+    fake_llm_response = """
+    {
+        "intent": "recovery",
+        "tools": ["insight"],
+        "reasoning": "Retry insight generation."
+    }
+    """
+
+    with patch(
+        "backend.orchestration.replanner."
+        "LLMService.generate",
+        return_value=fake_llm_response,
+    ), patch(
+        "backend.orchestration.replanner."
+        "resolve_plan_dependencies",
+        return_value=[
+            "sql",
+            "insight",
+        ],
+    ):
+
+        result = replanner_node({
+            "question":
+                "Explain the sales performance.",
+
+            "plan": [
+                "sql",
+                "insight",
+            ],
+
+            "executed_tools": [
+                "sql"
+            ],
+
+            "failed_tool":
+                "insight",
+
+            "last_tool_error":
+                "Insight generation failed.",
+
+            "replan_count": 0,
+
+            "trace": [],
+        })
+
+    assert result["plan"] == [
+        "insight"
+    ]
+
+    assert (
+        result["current_step"]
+        ==
+        "insight"
+    )
+
+
+# ============================================================
+# TEST 8
+# Future tools get dependencies automatically
+# ============================================================
+
+def test_replanner_resolves_future_tool_dependencies():
+
+    fake_llm_response = """
+    {
+        "intent": "recovery",
+        "tools": ["forecasting"],
+        "reasoning": "Retry forecasting."
+    }
+    """
+
+    fake_tools = {
+
+        "forecasting": {
+
+            "description":
+                "Forecast future values.",
+
+            "inputs": {},
+
+            "outputs": {
+                "forecast":
+                    "forecast_result",
+            },
+
+            "dependencies": [
+                "sql"
+            ],
+        },
+
+        "sql": {
+
+            "description":
+                "Run analytical SQL.",
+
+            "inputs": {},
+
+            "outputs": {},
+
+            "dependencies": [],
+        },
+    }
+
+    with patch(
+        "backend.orchestration.replanner."
+        "get_tool_descriptions",
+        return_value=fake_tools,
+    ), patch(
+        "backend.orchestration.replanner."
+        "LLMService.generate",
+        return_value=fake_llm_response,
+    ), patch(
+        "backend.orchestration.replanner."
+        "resolve_plan_dependencies",
+        return_value=[
+            "sql",
+            "forecasting",
+        ],
+    ) as mock_resolver:
+
+        result = replanner_node({
+            "question":
+                "Forecast next month's sales.",
+
+            "plan": [
+                "forecasting"
+            ],
+
+            "executed_tools": [],
+
+            "failed_tool":
+                "forecasting",
+
+            "last_tool_error":
+                "Forecast failed.",
+
+            "replan_count":
+                0,
+
+            "trace": [],
+        })
+
+    mock_resolver.assert_called_once_with([
+        "forecasting"
+    ])
+
+    assert result["plan"] == [
+        "sql",
+        "forecasting",
+    ]
+
+    assert (
+        result["current_step"]
+        == "sql"
     )

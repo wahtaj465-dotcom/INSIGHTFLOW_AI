@@ -9,8 +9,11 @@ from backend.services.llm_service import (
 )
 
 from backend.orchestration.tool_registry import (
-    get_available_tools,
     get_tool_descriptions,
+)
+
+from backend.orchestration.plan_resolver import (
+    resolve_plan_dependencies,
 )
 
 
@@ -395,6 +398,13 @@ def planner_node(
     """
     Generate an execution plan for the current
     analytical request.
+
+    The planner:
+    - discovers available tools dynamically
+    - asks the LLM to select tools
+    - validates selected tools
+    - expands tool dependencies
+    - falls back to deterministic planning if needed
     """
 
     question = (
@@ -412,12 +422,16 @@ def planner_node(
         )
     )
 
-    # --------------------------------------------------------
-    # Registry is the source of truth for valid tool names.
-    # --------------------------------------------------------
+    # ========================================================
+    # DISCOVER AVAILABLE TOOLS
+    # ========================================================
+
+    tool_descriptions = (
+        get_tool_descriptions()
+    )
 
     available_tools = set(
-        get_available_tools()
+        tool_descriptions.keys()
     )
 
     try:
@@ -454,13 +468,9 @@ def planner_node(
 
         valid_tools = [
             tool_name
-            for tool_name
-            in plan_result.tools
-            if tool_name
-            in available_tools
+            for tool_name in plan_result.tools
+            if tool_name in available_tools
         ]
-
-        # Remove duplicates while preserving order.
 
         valid_tools = list(
             dict.fromkeys(
@@ -473,6 +483,16 @@ def planner_node(
             raise ValueError(
                 "Planner returned no valid tools."
             )
+
+        # ====================================================
+        # EXPAND TOOL DEPENDENCIES
+        # ====================================================
+
+        valid_tools = (
+            resolve_plan_dependencies(
+                valid_tools
+            )
+        )
 
         planner_source = (
             "llm"
@@ -494,21 +514,42 @@ def planner_node(
             )
         )
 
-        # Validate fallback tools against registry as well.
+        # ----------------------------------------------------
+        # Validate fallback tools against registry
+        # ----------------------------------------------------
 
-        valid_tools = [
+        fallback_tools = [
             tool_name
-            for tool_name
-            in plan_result.tools
-            if tool_name
-            in available_tools
+            for tool_name in plan_result.tools
+            if tool_name in available_tools
         ]
 
-        valid_tools = list(
+        fallback_tools = list(
             dict.fromkeys(
-                valid_tools
+                fallback_tools
             )
         )
+
+        # ----------------------------------------------------
+        # Expand fallback dependencies
+        # ----------------------------------------------------
+
+        try:
+
+            valid_tools = (
+                resolve_plan_dependencies(
+                    fallback_tools
+                )
+            )
+
+        except Exception:
+
+            # If dependency metadata itself is invalid,
+            # retain the deterministic fallback plan.
+
+            valid_tools = (
+                fallback_tools
+            )
 
         planner_source = (
             "fallback"

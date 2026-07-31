@@ -8,6 +8,10 @@ from backend.orchestration.input_resolver import (
     build_tool_input,
 )
 
+from backend.orchestration.dependency_resolver import (
+    check_tool_dependencies,
+)
+
 
 def tool_executor_node(
     state: AgentState
@@ -19,6 +23,7 @@ def tool_executor_node(
     Responsibilities:
     - find the current tool
     - retrieve its registry definition
+    - validate tool dependencies
     - build inputs dynamically
     - execute the tool
     - store the raw tool result
@@ -96,6 +101,90 @@ def tool_executor_node(
         return {
             "current_step":
                 current_step,
+
+            "failed_tool":
+                current_step,
+
+            "last_tool_error":
+                error,
+
+            "error":
+                error,
+
+            "trace":
+                trace,
+        }
+
+    # ========================================================
+    # CHECK TOOL DEPENDENCIES
+    # ========================================================
+
+    dependency_status = (
+        check_tool_dependencies(
+            current_step,
+            state,
+        )
+    )
+
+    if not dependency_status[
+        "ready"
+    ]:
+
+        missing_dependencies = (
+            dependency_status.get(
+                "missing_dependencies",
+                []
+            )
+        )
+
+        error = (
+            f"Tool '{current_step}' cannot execute because "
+            f"required dependencies are not satisfied: "
+            f"{missing_dependencies}"
+        )
+
+        result = {
+            "success":
+                False,
+
+            "error":
+                error,
+
+            "missing_dependencies":
+                missing_dependencies,
+        }
+
+        # Store the blocked execution result.
+        tool_results[
+            current_step
+        ] = result
+
+        trace.append({
+            "node":
+                "tool_executor",
+
+            "tool":
+                current_step,
+
+            "status":
+                "blocked",
+
+            "missing_dependencies":
+                missing_dependencies,
+
+            "error":
+                error,
+        })
+
+        return {
+            "current_step":
+                current_step,
+
+            "executed_tools":
+                executed_tools,
+
+            "tool_results":
+                tool_results,
 
             "failed_tool":
                 current_step,

@@ -1,17 +1,33 @@
-from backend.orchestration.state import AgentState
+from backend.orchestration.state import (
+    AgentState,
+)
 
+from backend.orchestration.step_resolver import (
+    resolve_next_step,
+)
+
+
+# ============================================================
+# OBSERVER NODE
+# ============================================================
 
 def observer_node(
     state: AgentState
 ) -> dict:
     """
-    Observe the latest tool execution and determine
-    whether the workflow should:
+    Observe the latest tool execution and decide
+    what the agent should do next.
 
-    - continue to the next tool
-    - re-plan after a failure
-    - finish successfully
-    - finish because recovery attempts are exhausted
+    Responsibilities:
+    - inspect the latest tool result
+    - detect execution failure
+    - trigger replanning when recovery is required
+    - use the step resolver to find the next
+      executable tool
+    - detect blocked/invalid plans
+    - detect workflow completion
+
+    The observer does NOT execute tools.
     """
 
     # ========================================================
@@ -66,20 +82,129 @@ def observer_node(
 
     if not current_step:
 
+        resolution = resolve_next_step(
+            plan=plan,
+            executed_tools=executed_tools,
+            tool_results=tool_results,
+        )
+
+        # ----------------------------------------------------
+        # Plan already completed
+        # ----------------------------------------------------
+
+        if resolution.status == "complete":
+
+            trace.append({
+                "node":
+                    "observer",
+
+                "decision":
+                    "finish",
+
+                "reason":
+                    resolution.reason,
+            })
+
+            return {
+                "current_step":
+                    None,
+
+                "completed":
+                    True,
+
+                "error":
+                    None,
+
+                "trace":
+                    trace,
+            }
+
+        # ----------------------------------------------------
+        # A ready step exists
+        # ----------------------------------------------------
+
+        if resolution.status == "ready":
+
+            trace.append({
+                "node":
+                    "observer",
+
+                "decision":
+                    "continue",
+
+                "next_step":
+                    resolution.next_step,
+
+                "reason":
+                    resolution.reason,
+            })
+
+            return {
+                "current_step":
+                    resolution.next_step,
+
+                "completed":
+                    False,
+
+                "error":
+                    None,
+
+                "trace":
+                    trace,
+            }
+
+        # ----------------------------------------------------
+        # Plan is blocked/invalid
+        # ----------------------------------------------------
+
+        reason = (
+            resolution.reason
+            or
+            "No executable tool could be resolved."
+        )
+
         trace.append({
-            "node": "observer",
-            "decision": "finish",
-            "reason": "No current tool step exists.",
+            "node":
+                "observer",
+
+            "decision":
+                "replan",
+
+            "status":
+                resolution.status,
+
+            "reason":
+                reason,
+
+            "blocked_tools":
+                resolution.blocked_tools,
+
+            "missing_dependencies":
+                resolution.missing_dependencies,
         })
 
         return {
-            "current_step": None,
-            "completed": True,
-            "trace": trace,
+            "current_step":
+                None,
+
+            "failed_tool":
+                None,
+
+            "last_tool_error":
+                reason,
+
+            "completed":
+                False,
+
+            "error":
+                None,
+
+            "trace":
+                trace,
         }
 
     # ========================================================
-    # GET RESULT OF CURRENT TOOL
+    # INSPECT CURRENT TOOL RESULT
     # ========================================================
 
     result = tool_results.get(
@@ -105,7 +230,7 @@ def observer_node(
         success = True
 
     # ========================================================
-    # TOOL FAILED
+    # CURRENT TOOL FAILED
     # ========================================================
 
     if not success:
@@ -115,26 +240,43 @@ def observer_node(
                 "last_tool_error"
             )
             or (
-                result.get("error")
-                if isinstance(result, dict)
+                result.get(
+                    "error"
+                )
+                if isinstance(
+                    result,
+                    dict
+                )
                 else None
             )
-            or f"{current_step} failed."
+            or
+            f"{current_step} failed."
         )
 
         # ----------------------------------------------------
-        # Recovery is still available
+        # Recovery still available
         # ----------------------------------------------------
 
         if replan_count < max_replans:
 
             trace.append({
-                "node": "observer",
-                "tool": current_step,
-                "status": "error",
-                "decision": "replan",
-                "reason": last_tool_error,
-                "replan_count": replan_count,
+                "node":
+                    "observer",
+
+                "tool":
+                    current_step,
+
+                "status":
+                    "error",
+
+                "decision":
+                    "replan",
+
+                "reason":
+                    last_tool_error,
+
+                "replan_count":
+                    replan_count,
             })
 
             return {
@@ -150,12 +292,15 @@ def observer_node(
                 "completed":
                     False,
 
+                "error":
+                    None,
+
                 "trace":
                     trace,
             }
 
         # ----------------------------------------------------
-        # Recovery attempts exhausted
+        # Recovery exhausted
         # ----------------------------------------------------
 
         error = (
@@ -164,12 +309,23 @@ def observer_node(
         )
 
         trace.append({
-            "node": "observer",
-            "tool": current_step,
-            "status": "error",
-            "decision": "finish",
-            "reason": error,
-            "replan_count": replan_count,
+            "node":
+                "observer",
+
+            "tool":
+                current_step,
+
+            "status":
+                "error",
+
+            "decision":
+                "finish",
+
+            "reason":
+                error,
+
+            "replan_count":
+                replan_count,
         })
 
         return {
@@ -193,37 +349,47 @@ def observer_node(
         }
 
     # ========================================================
-    # TOOL SUCCEEDED
+    # CURRENT TOOL SUCCEEDED
     # ========================================================
 
-    remaining_tools = [
-        tool_name
-        for tool_name in plan
-        if tool_name not in executed_tools
-    ]
+    resolution = resolve_next_step(
+        plan=plan,
+        executed_tools=executed_tools,
+        tool_results=tool_results,
+    )
 
     # ========================================================
-    # MORE TOOLS REMAIN
+    # NEXT TOOL READY
     # ========================================================
 
-    if remaining_tools:
-
-        next_step = (
-            remaining_tools[0]
-        )
+    if resolution.status == "ready":
 
         trace.append({
-            "node": "observer",
-            "tool": current_step,
-            "status": "success",
-            "decision": "continue",
-            "completed_tool": current_step,
-            "next_step": next_step,
+            "node":
+                "observer",
+
+            "tool":
+                current_step,
+
+            "status":
+                "success",
+
+            "decision":
+                "continue",
+
+            "completed_tool":
+                current_step,
+
+            "next_step":
+                resolution.next_step,
+
+            "reason":
+                resolution.reason,
         })
 
         return {
             "current_step":
-                next_step,
+                resolution.next_step,
 
             "retry_count":
                 0,
@@ -245,38 +411,173 @@ def observer_node(
         }
 
     # ========================================================
-    # ALL TOOLS COMPLETED
+    # PLAN COMPLETED
     # ========================================================
 
+    if resolution.status == "complete":
+
+        trace.append({
+            "node":
+                "observer",
+
+            "tool":
+                current_step,
+
+            "status":
+                "success",
+
+            "decision":
+                "finish",
+
+            "completed_tool":
+                current_step,
+
+            "reason":
+                resolution.reason,
+        })
+
+        return {
+            "current_step":
+                None,
+
+            "retry_count":
+                0,
+
+            "failed_tool":
+                None,
+
+            "last_tool_error":
+                None,
+
+            "error":
+                None,
+
+            "completed":
+                True,
+
+            "trace":
+                trace,
+        }
+
+    # ========================================================
+    # PLAN BLOCKED / INVALID
+    # ========================================================
+
+    reason = (
+        resolution.reason
+        or
+        "No executable tool could be resolved."
+    )
+
+    # --------------------------------------------------------
+    # Recovery available
+    # --------------------------------------------------------
+
+    if replan_count < max_replans:
+
+        trace.append({
+            "node":
+                "observer",
+
+            "tool":
+                current_step,
+
+            "status":
+                resolution.status,
+
+            "decision":
+                "replan",
+
+            "completed_tool":
+                current_step,
+
+            "reason":
+                reason,
+
+            "blocked_tools":
+                resolution.blocked_tools,
+
+            "missing_dependencies":
+                resolution.missing_dependencies,
+
+            "replan_count":
+                replan_count,
+        })
+
+        return {
+            "current_step":
+                None,
+
+            "failed_tool":
+                None,
+
+            "last_tool_error":
+                reason,
+
+            "retry_count":
+                0,
+
+            "completed":
+                False,
+
+            "error":
+                None,
+
+            "trace":
+                trace,
+        }
+
+    # ========================================================
+    # BLOCKED AND RECOVERY EXHAUSTED
+    # ========================================================
+
+    error = (
+        "Execution plan could not continue and "
+        "maximum re-planning attempts were reached. "
+        f"{reason}"
+    )
+
     trace.append({
-        "node": "observer",
-        "tool": current_step,
-        "status": "success",
-        "decision": "finish",
-        "completed_tool": current_step,
-        "reason": (
-            "All planned tools completed successfully."
-        ),
+        "node":
+            "observer",
+
+        "tool":
+            current_step,
+
+        "status":
+            resolution.status,
+
+        "decision":
+            "finish",
+
+        "reason":
+            error,
+
+        "blocked_tools":
+            resolution.blocked_tools,
+
+        "missing_dependencies":
+            resolution.missing_dependencies,
+
+        "replan_count":
+            replan_count,
     })
 
     return {
         "current_step":
             None,
 
-        "retry_count":
-            0,
-
         "failed_tool":
             None,
 
         "last_tool_error":
-            None,
-
-        "error":
-            None,
+            reason,
 
         "completed":
             True,
+
+        "error":
+            error,
 
         "trace":
             trace,
@@ -294,9 +595,15 @@ def route_after_observation(
     Decide where LangGraph should route after observation.
 
     Returns:
-        execute -> execute the next tool
-        replan  -> recover from a failed tool
-        finish  -> terminate the workflow
+
+        execute
+            A tool is ready for execution.
+
+        replan
+            Recovery planning is required.
+
+        finish
+            Workflow has completed or cannot recover.
     """
 
     # ========================================================
@@ -311,7 +618,7 @@ def route_after_observation(
         return "finish"
 
     # ========================================================
-    # CHECK OBSERVER'S MOST RECENT DECISION
+    # CHECK MOST RECENT OBSERVER DECISION
     # ========================================================
 
     trace = state.get(
@@ -326,17 +633,32 @@ def route_after_observation(
         )
 
         if (
-            last_event.get("node")
+            last_event.get(
+                "node"
+            )
             == "observer"
-            and
-            last_event.get("decision")
-            == "replan"
         ):
 
-            return "replan"
+            decision = (
+                last_event.get(
+                    "decision"
+                )
+            )
+
+            if decision == "replan":
+
+                return "replan"
+
+            if decision == "continue":
+
+                return "execute"
+
+            if decision == "finish":
+
+                return "finish"
 
     # ========================================================
-    # NEXT TOOL AVAILABLE
+    # FALLBACK ROUTING
     # ========================================================
 
     if state.get(
@@ -345,8 +667,5 @@ def route_after_observation(
 
         return "execute"
 
-    # ========================================================
-    # NOTHING LEFT TO DO
-    # ========================================================
-
     return "finish"
+
