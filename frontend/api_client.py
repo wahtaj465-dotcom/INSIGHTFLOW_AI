@@ -7,175 +7,267 @@ import requests
 
 API_BASE_URL = "http://127.0.0.1:8000/api"
 
+DEFAULT_TIMEOUT = 60
+ANALYSIS_TIMEOUT = 180
+
 
 class InsightFlowAPI:
     """
-    Frontend API client for InsightFlow.
+    HTTP client used by the InsightFlow frontend.
+
+    This class is the frontend boundary to the FastAPI backend.
 
     Responsibilities:
-        - Check backend health
-        - Upload datasets
-        - Retrieve prepared dataset metadata
-        - Ask analytical questions
-        - Delete dataset sessions
-        - Normalize API responses
+    - backend health checks
+    - dataset preparation/upload
+    - dataset retrieval
+    - agentic analytical questions
+    - one-shot upload + analysis
+    - dataset deletion
+    - consistent API error handling
     """
 
     def __init__(
         self,
-        base_url=API_BASE_URL
+        base_url: str = API_BASE_URL,
     ):
-
-        self.base_url = (
-            base_url.rstrip("/")
-        )
-
+        self.base_url = base_url.rstrip("/")
 
     # ========================================================
-    # HEALTH
+    # VALIDATION HELPERS
     # ========================================================
 
-    def health_check(self):
+    @staticmethod
+    def _validate_dataset_id(
+        dataset_id,
+    ) -> str:
         """
-        Check whether the InsightFlow backend is available.
+        Validate and normalize a dataset ID.
         """
 
-        try:
-
-            response = requests.get(
-                f"{self.base_url}/health",
-                timeout=10
+        if not isinstance(
+            dataset_id,
+            str,
+        ):
+            raise ValueError(
+                "dataset_id must be a string."
             )
 
-            response.raise_for_status()
+        dataset_id = dataset_id.strip()
 
-            return response.json()
+        if not dataset_id:
+            raise ValueError(
+                "dataset_id cannot be empty."
+            )
 
+        return dataset_id
 
-        except requests.RequestException as error:
+    @staticmethod
+    def _validate_question(
+        question,
+    ) -> str:
+        """
+        Validate and normalize a user question.
+        """
 
-            return {
-                "status": "error",
-                "error": str(error)
-            }
+        if not isinstance(
+            question,
+            str,
+        ):
+            raise ValueError(
+                "Question must be a string."
+            )
 
+        question = question.strip()
 
-    # ========================================================
-    # UPLOAD DATASET
-    # ========================================================
+        if not question:
+            raise ValueError(
+                "Question cannot be empty."
+            )
 
-    def upload_dataset(
-        self,
-        uploaded_file
+        return question
+
+    @staticmethod
+    def _prepare_file(
+        uploaded_file,
     ):
         """
-        Upload a CSV/XLS/XLSX dataset to the backend.
+        Convert a Streamlit-style uploaded file into the
+        multipart format expected by requests.
 
-        The backend prepares the dataset and returns:
+        Expected uploaded_file interface:
 
-            {
-                "success": True,
-                "dataset_id": "...",
-                "dataset": {...},
-                "quality": {...},
-                "eda": {...},
-                "visualizations": [...]
-            }
-
-        This method intentionally returns the COMPLETE response
-        because app.py needs the dataset_id and preparation
-        information.
+            uploaded_file.name
+            uploaded_file.type
+            uploaded_file.getvalue()
         """
 
         if uploaded_file is None:
-
             raise ValueError(
                 "uploaded_file cannot be None."
             )
 
-
-        # ----------------------------------------------------
-        # Prepare multipart upload
-        # ----------------------------------------------------
-
         filename = getattr(
             uploaded_file,
             "name",
-            "dataset.csv"
+            "dataset.csv",
         )
-
 
         content_type = (
             getattr(
                 uploaded_file,
                 "type",
-                None
+                None,
             )
             or
             "application/octet-stream"
         )
 
-
         try:
-
             file_content = (
                 uploaded_file.getvalue()
             )
 
-        except AttributeError:
-
+        except AttributeError as exc:
             raise ValueError(
                 "uploaded_file must provide getvalue()."
+            ) from exc
+
+        if not file_content:
+            raise ValueError(
+                "Uploaded file is empty."
             )
 
-
-        files = {
-
+        return {
             "file": (
                 filename,
                 file_content,
-                content_type
+                content_type,
             )
         }
 
+    # ========================================================
+    # HEALTH
+    # ========================================================
+
+    def health_check(
+        self,
+    ):
+        """
+        Check whether the analytics API is available.
+
+        This endpoint targets:
+
+            GET /api/health
+
+        Health checks intentionally return a dictionary
+        instead of raising when the backend is unreachable,
+        allowing the UI to show backend status cleanly.
+        """
 
         try:
+            response = requests.get(
+                f"{self.base_url}/health",
+                timeout=10,
+            )
 
+            response.raise_for_status()
+
+            payload = response.json()
+
+            if isinstance(
+                payload,
+                dict,
+            ):
+                return payload
+
+            return {
+                "status": "healthy",
+                "response": payload,
+            }
+
+        except (
+            requests.RequestException,
+            ValueError,
+        ) as error:
+
+            return {
+                "status": "error",
+                "error": str(error),
+            }
+
+    # ========================================================
+    # PREPARE / UPLOAD DATASET
+    # ========================================================
+
+    def upload_dataset(
+        self,
+        uploaded_file,
+    ):
+        """
+        Upload and prepare a CSV/XLS/XLSX dataset.
+
+        Endpoint:
+
+            POST /api/datasets
+
+        Returns the COMPLETE API response so app.py can retain
+        both dataset_id and preparation results.
+        """
+
+        files = self._prepare_file(
+            uploaded_file
+        )
+
+        try:
             response = requests.post(
                 f"{self.base_url}/datasets",
                 files=files,
-                timeout=180
+                timeout=ANALYSIS_TIMEOUT,
             )
 
-
-            payload = (
-                self._handle_response(
-                    response
-                )
+            payload = self._handle_response(
+                response
             )
-
 
             if not isinstance(
                 payload,
-                dict
+                dict,
             ):
-
                 raise RuntimeError(
                     "Invalid dataset upload response "
                     "received from backend."
                 )
 
-
             return payload
 
-
         except requests.RequestException as error:
-
             raise RuntimeError(
                 "Could not connect to InsightFlow API: "
                 f"{error}"
             ) from error
 
+    # ========================================================
+    # ALIAS: PREPARE DATASET
+    # ========================================================
+
+    def prepare_dataset(
+        self,
+        uploaded_file,
+    ):
+        """
+        Semantic alias for upload_dataset().
+
+        The backend /datasets endpoint performs dataset
+        preparation, so both names represent the same action.
+
+        Keeping upload_dataset preserves compatibility with
+        the existing frontend.
+        """
+
+        return self.upload_dataset(
+            uploaded_file
+        )
 
     # ========================================================
     # GET DATASET
@@ -183,262 +275,229 @@ class InsightFlowAPI:
 
     def get_dataset(
         self,
-        dataset_id
+        dataset_id,
     ):
         """
-        Retrieve prepared dataset metadata.
+        Retrieve prepared dataset information.
 
-        Backend response:
+        Endpoint:
+
+            GET /api/datasets/{dataset_id}
+
+        The backend normally returns:
 
             {
                 "success": True,
-                "dataset": {
-                    "dataset_id": "...",
-                    "rows": ...,
-                    "columns": [...],
-                    "schema": {...},
-                    "quality": {...},
-                    "eda_results": {...},
-                    "eda_charts": [...]
-                }
+                "dataset": {...}
             }
 
-        IMPORTANT:
-
-        Frontend components should receive the INNER
-        dataset object rather than the API envelope.
-
-        Therefore:
-
-            api.get_dataset(...)
-
-        returns:
-
-            {
-                "dataset_id": "...",
-                "rows": ...,
-                "eda_charts": [...]
-            }
+        Frontend components generally need the inner dataset
+        object, so this method unwraps it.
         """
 
-        if not isinstance(
-            dataset_id,
-            str
-        ):
-
-            raise ValueError(
-                "dataset_id must be a string."
-            )
-
-
         dataset_id = (
-            dataset_id.strip()
+            self._validate_dataset_id(
+                dataset_id
+            )
         )
 
-
-        if not dataset_id:
-
-            raise ValueError(
-                "dataset_id cannot be empty."
-            )
-
-
         try:
-
             response = requests.get(
-                f"{self.base_url}/datasets/{dataset_id}",
-                timeout=60
+                (
+                    f"{self.base_url}"
+                    f"/datasets/{dataset_id}"
+                ),
+                timeout=DEFAULT_TIMEOUT,
             )
 
-
-            payload = (
-                self._handle_response(
-                    response
-                )
+            payload = self._handle_response(
+                response
             )
-
-
-            # ------------------------------------------------
-            # Validate response
-            # ------------------------------------------------
 
             if not isinstance(
                 payload,
-                dict
+                dict,
             ):
-
                 raise RuntimeError(
                     "Invalid dataset response "
                     "received from backend."
                 )
 
-
-            # ------------------------------------------------
-            # Current backend format:
-            #
-            # {
-            #     "success": True,
-            #     "dataset": {...}
-            # }
-            # ------------------------------------------------
-
-            dataset = (
-                payload.get(
-                    "dataset"
-                )
+            dataset = payload.get(
+                "dataset"
             )
-
 
             if isinstance(
                 dataset,
-                dict
+                dict,
             ):
-
                 return dataset
 
-
-            # ------------------------------------------------
-            # Compatibility fallback
-            #
-            # If backend later returns dataset metadata
-            # directly, do not break the frontend.
-            # ------------------------------------------------
-
+            # Compatibility fallback if the backend later
+            # returns the dataset object directly.
             return payload
 
-
         except requests.RequestException as error:
-
             raise RuntimeError(
                 "Could not retrieve dataset: "
                 f"{error}"
             ) from error
 
-
     # ========================================================
-    # ASK DATASET
+    # ASK AGENT
     # ========================================================
 
     def ask_dataset(
         self,
         dataset_id,
-        question
+        question,
     ):
         """
-        Ask a natural-language analytical question about
-        an already prepared dataset.
+        Ask the completed InsightFlow agent graph a question
+        about an already prepared dataset.
 
-        Returns the COMPLETE backend response because the
-        question component needs:
+        Endpoint:
 
-            question
-            analysis
-            visualization
-            insight
-            insight_status
+            POST /api/datasets/{dataset_id}/ask
+
+        Flow:
+
+            Frontend
+                ↓
+            FastAPI
+                ↓
+            AgentService
+                ↓
+            LangGraph Agent
+                ↓
+            Planner
+                ↓
+            Tool Execution
+                ↓
+            Observer / Recovery
+                ↓
+            Final Response
+
+        Returns the complete backend response.
         """
 
-        # ----------------------------------------------------
-        # Validate dataset ID
-        # ----------------------------------------------------
-
-        if not isinstance(
-            dataset_id,
-            str
-        ):
-
-            raise ValueError(
-                "dataset_id must be a string."
-            )
-
-
         dataset_id = (
-            dataset_id.strip()
+            self._validate_dataset_id(
+                dataset_id
+            )
         )
-
-
-        if not dataset_id:
-
-            raise ValueError(
-                "dataset_id cannot be empty."
-            )
-
-
-        # ----------------------------------------------------
-        # Validate question
-        # ----------------------------------------------------
-
-        if not isinstance(
-            question,
-            str
-        ):
-
-            raise ValueError(
-                "Question must be a string."
-            )
-
 
         question = (
-            question.strip()
+            self._validate_question(
+                question
+            )
         )
 
-
-        if not question:
-
-            raise ValueError(
-                "Question cannot be empty."
-            )
-
-
-        # ----------------------------------------------------
-        # Form data
-        # ----------------------------------------------------
-
-        data = {
-            "question": question
-        }
-
-
         try:
-
             response = requests.post(
                 (
                     f"{self.base_url}"
                     f"/datasets/{dataset_id}/ask"
                 ),
-                data=data,
-                timeout=180
+                data={
+                    "question": question,
+                },
+                timeout=ANALYSIS_TIMEOUT,
             )
 
-
-            payload = (
-                self._handle_response(
-                    response
-                )
+            payload = self._handle_response(
+                response
             )
-
 
             if not isinstance(
                 payload,
-                dict
+                dict,
             ):
-
                 raise RuntimeError(
-                    "Invalid analysis response "
+                    "Invalid agent response "
                     "received from backend."
                 )
 
-
             return payload
 
-
         except requests.RequestException as error:
-
             raise RuntimeError(
                 "Could not analyze question: "
                 f"{error}"
             ) from error
 
+    # ========================================================
+    # ONE-SHOT ANALYSIS
+    # ========================================================
+
+    def analyze_dataset(
+        self,
+        uploaded_file,
+        question,
+    ):
+        """
+        Upload a dataset and ask an analytical question in
+        one request.
+
+        Endpoint:
+
+            POST /api/analyze
+
+        Useful when the frontend wants:
+
+            upload
+              ↓
+            preparation
+              ↓
+            agent analysis
+
+        as one operation.
+
+        The regular upload_dataset() + ask_dataset() flow
+        remains available for interactive sessions where the
+        user asks multiple questions about one dataset.
+        """
+
+        question = (
+            self._validate_question(
+                question
+            )
+        )
+
+        files = self._prepare_file(
+            uploaded_file
+        )
+
+        try:
+            response = requests.post(
+                f"{self.base_url}/analyze",
+                files=files,
+                data={
+                    "question": question,
+                },
+                timeout=ANALYSIS_TIMEOUT,
+            )
+
+            payload = self._handle_response(
+                response
+            )
+
+            if not isinstance(
+                payload,
+                dict,
+            ):
+                raise RuntimeError(
+                    "Invalid analysis response "
+                    "received from backend."
+                )
+
+            return payload
+
+        except requests.RequestException as error:
+            raise RuntimeError(
+                "Could not perform dataset analysis: "
+                f"{error}"
+            ) from error
 
     # ========================================================
     # DELETE DATASET
@@ -446,56 +505,51 @@ class InsightFlowAPI:
 
     def delete_dataset(
         self,
-        dataset_id
+        dataset_id,
     ):
         """
         Delete a prepared dataset session.
+
+        Endpoint:
+
+            DELETE /api/datasets/{dataset_id}
         """
 
-        if not isinstance(
-            dataset_id,
-            str
-        ):
-
-            raise ValueError(
-                "dataset_id must be a string."
-            )
-
-
         dataset_id = (
-            dataset_id.strip()
+            self._validate_dataset_id(
+                dataset_id
+            )
         )
 
-
-        if not dataset_id:
-
-            raise ValueError(
-                "dataset_id cannot be empty."
-            )
-
-
         try:
-
             response = requests.delete(
-                f"{self.base_url}/datasets/{dataset_id}",
-                timeout=30
+                (
+                    f"{self.base_url}"
+                    f"/datasets/{dataset_id}"
+                ),
+                timeout=30,
             )
 
+            payload = self._handle_response(
+                response
+            )
 
-            return (
-                self._handle_response(
-                    response
+            if not isinstance(
+                payload,
+                dict,
+            ):
+                raise RuntimeError(
+                    "Invalid delete response "
+                    "received from backend."
                 )
-            )
 
+            return payload
 
         except requests.RequestException as error:
-
             raise RuntimeError(
                 "Could not delete dataset: "
                 f"{error}"
             ) from error
-
 
     # ========================================================
     # RESPONSE HANDLER
@@ -503,17 +557,16 @@ class InsightFlowAPI:
 
     @staticmethod
     def _handle_response(
-        response
+        response,
     ):
         """
-        Convert an HTTP response into Python data and
-        raise a clean RuntimeError when the API reports
-        an error.
+        Convert an HTTP response into Python data and produce
+        readable errors for frontend components.
 
-        FastAPI commonly returns errors as:
+        FastAPI errors may look like:
 
             {
-                "detail": "..."
+                "detail": "Dataset not found."
             }
 
         or:
@@ -524,123 +577,153 @@ class InsightFlowAPI:
                     "error": "..."
                 }
             }
+
+        or validation errors where detail is a list.
         """
 
         # ----------------------------------------------------
-        # Parse JSON
+        # Parse response
         # ----------------------------------------------------
 
         try:
-
-            payload = (
-                response.json()
-            )
-
+            payload = response.json()
 
         except ValueError:
-
             payload = {
-
-                "detail":
-                    (
-                        response.text
-                        or
-                        "Backend returned a non-JSON response."
-                    )
+                "detail": (
+                    response.text
+                    or
+                    "Backend returned a non-JSON response."
+                )
             }
 
-
         # ----------------------------------------------------
-        # Successful response
+        # Success
         # ----------------------------------------------------
 
         if response.ok:
-
             return payload
 
-
         # ----------------------------------------------------
-        # Extract FastAPI error detail
+        # Extract FastAPI detail
         # ----------------------------------------------------
 
         if isinstance(
             payload,
-            dict
+            dict,
         ):
-
-            detail = (
-                payload.get(
-                    "detail",
-                    payload
-                )
+            detail = payload.get(
+                "detail",
+                payload,
             )
 
         else:
-
             detail = payload
 
-
         # ----------------------------------------------------
-        # Make nested error messages readable
+        # Dictionary error
         # ----------------------------------------------------
 
         if isinstance(
             detail,
-            dict
+            dict,
         ):
-
-            message = (
-                detail.get(
-                    "message"
-                )
+            message = detail.get(
+                "message"
             )
 
-
-            error = (
-                detail.get(
-                    "error"
-                )
+            error = detail.get(
+                "error"
             )
 
-
-            if (
-                message
-                and
-                error
-            ):
-
+            if message and error:
                 error_text = (
                     f"{message} {error}"
                 )
 
-
             elif message:
-
                 error_text = str(
                     message
                 )
 
-
             elif error:
-
                 error_text = str(
                     error
                 )
 
-
             else:
-
                 error_text = str(
                     detail
                 )
 
+        # ----------------------------------------------------
+        # FastAPI validation errors
+        # ----------------------------------------------------
+
+        elif isinstance(
+            detail,
+            list,
+        ):
+            messages = []
+
+            for item in detail:
+
+                if isinstance(
+                    item,
+                    dict,
+                ):
+                    message = item.get(
+                        "msg"
+                    )
+
+                    location = item.get(
+                        "loc"
+                    )
+
+                    if location:
+                        location_text = ".".join(
+                            str(part)
+                            for part in location
+                        )
+
+                        if message:
+                            messages.append(
+                                f"{location_text}: "
+                                f"{message}"
+                            )
+
+                        else:
+                            messages.append(
+                                location_text
+                            )
+
+                    elif message:
+                        messages.append(
+                            str(message)
+                        )
+
+                    else:
+                        messages.append(
+                            str(item)
+                        )
+
+                else:
+                    messages.append(
+                        str(item)
+                    )
+
+            error_text = "; ".join(
+                messages
+            )
+
+        # ----------------------------------------------------
+        # String / other error
+        # ----------------------------------------------------
 
         else:
-
             error_text = str(
                 detail
             )
-
 
         # ----------------------------------------------------
         # Raise frontend-friendly error
@@ -658,3 +741,91 @@ class InsightFlowAPI:
 # ============================================================
 
 api = InsightFlowAPI()
+
+
+# ============================================================
+# CONVENIENCE FUNCTIONS
+# ============================================================
+
+def health_check():
+    """
+    Check backend health using the shared API client.
+    """
+
+    return api.health_check()
+
+
+def upload_dataset(
+    uploaded_file,
+):
+    """
+    Upload and prepare a dataset.
+    """
+
+    return api.upload_dataset(
+        uploaded_file
+    )
+
+
+def prepare_dataset(
+    uploaded_file,
+):
+    """
+    Prepare a dataset.
+    """
+
+    return api.prepare_dataset(
+        uploaded_file
+    )
+
+
+def get_dataset(
+    dataset_id,
+):
+    """
+    Retrieve a prepared dataset.
+    """
+
+    return api.get_dataset(
+        dataset_id
+    )
+
+
+def ask_dataset(
+    dataset_id,
+    question,
+):
+    """
+    Ask the agent an analytical question.
+    """
+
+    return api.ask_dataset(
+        dataset_id,
+        question,
+    )
+
+
+def analyze_dataset(
+    uploaded_file,
+    question,
+):
+    """
+    Upload + prepare + analyze in one request.
+    """
+
+    return api.analyze_dataset(
+        uploaded_file,
+        question,
+    )
+
+
+def delete_dataset(
+    dataset_id,
+):
+    """
+    Delete a dataset session.
+    """
+
+    return api.delete_dataset(
+        dataset_id
+    )

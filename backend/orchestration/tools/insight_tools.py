@@ -8,17 +8,26 @@ from backend.services.llm_service import LLMService
 from backend.agents.insight_agent import InsightAgent
 
 
-def _records_to_dataframe(
-    records: Optional[list[dict[str, Any]]]
-) -> pd.DataFrame:
+def _records_to_dataframe(records) -> pd.DataFrame:
     """
-    Convert SQL-result records into a DataFrame.
+    Convert SQL results into a pandas DataFrame.
     """
 
-    if not records:
+    if isinstance(records, pd.DataFrame):
+        return records.copy()
+
+    if records is None:
         return pd.DataFrame()
 
-    return pd.DataFrame(records)
+    if isinstance(records, list):
+        return pd.DataFrame(records)
+
+    if isinstance(records, dict):
+        return pd.DataFrame([records])
+
+    return pd.DataFrame({
+        "result": [records]
+    })
 
 
 @tool
@@ -29,13 +38,7 @@ def generate_analytical_insight(
     generated_sql: Optional[str] = None,
 ) -> dict:
     """
-    Generate a natural-language analytical insight for an InsightFlow
-    dataset.
-
-    Use this tool after analytical operations such as SQL execution,
-    statistical analysis, anomaly detection, or visualization when the
-    user needs an explanation, interpretation, business insight, or
-    summary of the analytical result.
+    Generate analytical insights for a prepared dataset.
     """
 
     # -------------------------------------------------
@@ -70,51 +73,56 @@ def generate_analytical_insight(
         }
 
     # -------------------------------------------------
-    # Retrieve prepared dataset
+    # Retrieve dataset
     # -------------------------------------------------
 
-    dataset = dataset_manager.get_dataset(
-        dataset_id
-    )
+    dataset = dataset_manager.get_dataset(dataset_id)
 
     if dataset is None:
         return {
             "success": False,
             "dataset_id": dataset_id,
             "question": question,
-            "error": (
-                f"Dataset '{dataset_id}' does not "
-                "exist or has expired."
-            ),
+            "error": f"Dataset '{dataset_id}' does not exist or has expired.",
         }
 
-    source_df = dataset.get(
-        "cleaned_df"
-    )
+    source_df = dataset.get("cleaned_df")
 
     if source_df is None:
         return {
             "success": False,
             "dataset_id": dataset_id,
             "question": question,
-            "error": (
-                "Prepared dataset does not contain "
-                "a cleaned DataFrame."
-            ),
+            "error": "Prepared dataset does not contain a cleaned DataFrame.",
         }
 
     # -------------------------------------------------
-    # Build analytical result DataFrame
+    # Build DataFrame
     # -------------------------------------------------
 
-    result_df = _records_to_dataframe(
-        sql_result
-    )
+    result_df = _records_to_dataframe(sql_result)
 
-    # If no SQL result exists, give the insight agent
-    # access to the prepared source dataset.
     if result_df.empty:
         result_df = source_df.copy()
+
+    # -------------------------------------------------
+    # Optional metadata
+    # -------------------------------------------------
+
+    quality_report = (
+        dataset.get("quality_report")
+        or dataset.get("quality")
+    )
+
+    anomalies = (
+        dataset.get("anomalies")
+        or dataset.get("anomaly_report")
+    )
+
+    eda_results = (
+        dataset.get("eda_results")
+        or dataset.get("eda")
+    )
 
     # -------------------------------------------------
     # Generate insight
@@ -124,14 +132,15 @@ def generate_analytical_insight(
 
         llm_service = LLMService()
 
-        insight_agent = InsightAgent(
-            llm_service
-        )
+        insight_agent = InsightAgent(llm_service)
 
         insight = insight_agent.generate_insight(
             question=question,
             sql=generated_sql or "",
-            result_df=result_df,
+            result=result_df,
+            quality_report=quality_report,
+            anomalies=anomalies,
+            eda_results=eda_results,
         )
 
         if insight is None:
@@ -142,14 +151,11 @@ def generate_analytical_insight(
                 "insight": None,
                 "insight_source": None,
                 "llm_success": False,
-                "error": (
-                    "Insight Agent did not return "
-                    "an analytical insight."
-                ),
+                "error": "Insight Agent did not return an analytical insight.",
             }
 
         # ---------------------------------------------
-        # Support current InsightAgent response shapes
+        # Normalize response
         # ---------------------------------------------
 
         if isinstance(insight, dict):
@@ -170,15 +176,11 @@ def generate_analytical_insight(
                 insight_source == "llm"
             )
 
-            llm_error = insight.get(
-                "llm_error"
-            )
+            llm_error = insight.get("llm_error")
 
         else:
 
-            insight_text = str(
-                insight
-            )
+            insight_text = str(insight)
 
             insight_source = "llm"
 
@@ -188,21 +190,12 @@ def generate_analytical_insight(
 
         return {
             "success": True,
-
             "dataset_id": dataset_id,
-
             "question": question,
-
             "insight": insight_text,
-
             "insight_source": insight_source,
-
-            "llm_success": bool(
-                llm_success
-            ),
-
+            "llm_success": bool(llm_success),
             "llm_error": llm_error,
-
             "error": None,
         }
 
@@ -210,18 +203,11 @@ def generate_analytical_insight(
 
         return {
             "success": False,
-
             "dataset_id": dataset_id,
-
             "question": question,
-
             "insight": None,
-
             "insight_source": None,
-
             "llm_success": False,
-
             "llm_error": str(exc),
-
             "error": str(exc),
         }

@@ -13,11 +13,20 @@ from fastapi import (
     UploadFile,
     File,
     Form,
-    HTTPException
+    HTTPException,
 )
 
-from backend.workflows.analytics_workflow import AnalyticsWorkflow
-from backend.services.dataset_manager import dataset_manager
+from backend.workflows.analytics_workflow import (
+    AnalyticsWorkflow,
+)
+
+from backend.services.dataset_manager import (
+    dataset_manager,
+)
+
+from backend.services.agent_service import (
+    agent_service,
+)
 
 
 # ============================================================
@@ -26,7 +35,7 @@ from backend.services.dataset_manager import dataset_manager
 
 router = APIRouter(
     prefix="/api",
-    tags=["Analytics"]
+    tags=["Analytics"],
 )
 
 
@@ -34,11 +43,13 @@ router = APIRouter(
 # UPLOAD DIRECTORY
 # ============================================================
 
-UPLOAD_DIR = Path("data/uploads")
+UPLOAD_DIR = Path(
+    "data/uploads"
+)
 
 UPLOAD_DIR.mkdir(
     parents=True,
-    exist_ok=True
+    exist_ok=True,
 )
 
 
@@ -49,7 +60,7 @@ UPLOAD_DIR.mkdir(
 ALLOWED_EXTENSIONS = {
     ".csv",
     ".xlsx",
-    ".xls"
+    ".xls",
 }
 
 
@@ -57,10 +68,12 @@ ALLOWED_EXTENSIONS = {
 # JSON SAFETY
 # ============================================================
 
-def make_json_safe(value):
+def make_json_safe(
+    value
+):
     """
-    Recursively convert Pandas, NumPy, datetime and missing
-    values into JSON-safe Python objects.
+    Recursively convert Pandas, NumPy, datetime and
+    missing values into JSON-safe Python objects.
     """
 
     if value is None:
@@ -70,7 +83,10 @@ def make_json_safe(value):
     # DATAFRAME
     # --------------------------------------------------------
 
-    if isinstance(value, pd.DataFrame):
+    if isinstance(
+        value,
+        pd.DataFrame,
+    ):
 
         return make_json_safe(
             value.to_dict(
@@ -82,7 +98,10 @@ def make_json_safe(value):
     # SERIES
     # --------------------------------------------------------
 
-    if isinstance(value, pd.Series):
+    if isinstance(
+        value,
+        pd.Series,
+    ):
 
         return make_json_safe(
             value.tolist()
@@ -92,28 +111,40 @@ def make_json_safe(value):
     # DICTIONARY
     # --------------------------------------------------------
 
-    if isinstance(value, dict):
+    if isinstance(
+        value,
+        dict,
+    ):
 
         safe = {}
 
-        for key, item in value.items():
+        for (
+            key,
+            item
+        ) in value.items():
 
             if isinstance(
                 key,
                 (
                     pd.Timestamp,
                     datetime,
-                    date
-                )
+                    date,
+                ),
             ):
 
-                safe_key = key.isoformat()
+                safe_key = (
+                    key.isoformat()
+                )
 
             else:
 
-                safe_key = str(key)
+                safe_key = str(
+                    key
+                )
 
-            safe[safe_key] = make_json_safe(
+            safe[
+                safe_key
+            ] = make_json_safe(
                 item
             )
 
@@ -128,12 +159,14 @@ def make_json_safe(value):
         (
             list,
             tuple,
-            set
-        )
+            set,
+        ),
     ):
 
         return [
-            make_json_safe(item)
+            make_json_safe(
+                item
+            )
             for item in value
         ]
 
@@ -141,7 +174,10 @@ def make_json_safe(value):
     # NUMPY ARRAY
     # --------------------------------------------------------
 
-    if isinstance(value, np.ndarray):
+    if isinstance(
+        value,
+        np.ndarray,
+    ):
 
         return make_json_safe(
             value.tolist()
@@ -151,19 +187,32 @@ def make_json_safe(value):
     # NUMPY INTEGER
     # --------------------------------------------------------
 
-    if isinstance(value, np.integer):
+    if isinstance(
+        value,
+        np.integer,
+    ):
 
-        return int(value)
+        return int(
+            value
+        )
 
     # --------------------------------------------------------
     # NUMPY FLOAT
     # --------------------------------------------------------
 
-    if isinstance(value, np.floating):
+    if isinstance(
+        value,
+        np.floating,
+    ):
 
-        converted = float(value)
+        converted = float(
+            value
+        )
 
-        if not math.isfinite(converted):
+        if not math.isfinite(
+            converted
+        ):
+
             return None
 
         return converted
@@ -172,9 +221,15 @@ def make_json_safe(value):
     # PYTHON FLOAT
     # --------------------------------------------------------
 
-    if isinstance(value, float):
+    if isinstance(
+        value,
+        float,
+    ):
 
-        if not math.isfinite(value):
+        if not math.isfinite(
+            value
+        ):
+
             return None
 
         return value
@@ -183,17 +238,28 @@ def make_json_safe(value):
     # NUMPY BOOLEAN
     # --------------------------------------------------------
 
-    if isinstance(value, np.bool_):
+    if isinstance(
+        value,
+        np.bool_,
+    ):
 
-        return bool(value)
+        return bool(
+            value
+        )
 
     # --------------------------------------------------------
     # TIMESTAMP
     # --------------------------------------------------------
 
-    if isinstance(value, pd.Timestamp):
+    if isinstance(
+        value,
+        pd.Timestamp,
+    ):
 
-        if pd.isna(value):
+        if pd.isna(
+            value
+        ):
+
             return None
 
         return value.isoformat()
@@ -206,8 +272,8 @@ def make_json_safe(value):
         value,
         (
             datetime,
-            date
-        )
+            date,
+        ),
     ):
 
         return value.isoformat()
@@ -218,14 +284,16 @@ def make_json_safe(value):
 
     try:
 
-        missing = pd.isna(value)
+        missing = pd.isna(
+            value
+        )
 
         if isinstance(
             missing,
             (
                 bool,
-                np.bool_
-            )
+                np.bool_,
+            ),
         ):
 
             if missing:
@@ -233,7 +301,7 @@ def make_json_safe(value):
 
     except (
         TypeError,
-        ValueError
+        ValueError,
     ):
 
         pass
@@ -247,8 +315,8 @@ def make_json_safe(value):
         (
             str,
             int,
-            bool
-        )
+            bool,
+        ),
     ):
 
         return value
@@ -257,24 +325,30 @@ def make_json_safe(value):
     # FALLBACK
     # --------------------------------------------------------
 
-    return str(value)
+    return str(
+        value
+    )
 
 
 # ============================================================
 # DATAFRAME -> RECORDS
 # ============================================================
 
-def dataframe_to_records(df):
+def dataframe_to_records(
+    df
+):
 
     if df is None:
         return None
 
     if not isinstance(
         df,
-        pd.DataFrame
+        pd.DataFrame,
     ):
 
-        return make_json_safe(df)
+        return make_json_safe(
+            df
+        )
 
     return make_json_safe(
         df.to_dict(
@@ -287,13 +361,17 @@ def dataframe_to_records(df):
 # SAVE UPLOAD
 # ============================================================
 
-async def save_uploaded_file(file):
+async def save_uploaded_file(
+    file
+):
 
     if not file.filename:
 
         raise HTTPException(
             status_code=400,
-            detail="No file was provided."
+            detail=(
+                "No file was provided."
+            ),
         )
 
     original_filename = Path(
@@ -310,8 +388,9 @@ async def save_uploaded_file(file):
             status_code=400,
             detail=(
                 "Unsupported file type. "
-                "Currently supported: CSV, XLSX and XLS."
-            )
+                "Currently supported: "
+                "CSV, XLSX and XLS."
+            ),
         )
 
     unique_filename = (
@@ -319,17 +398,20 @@ async def save_uploaded_file(file):
     )
 
     file_path = (
-        UPLOAD_DIR /
+        UPLOAD_DIR
+        /
         unique_filename
     )
 
     try:
 
-        with file_path.open("wb") as buffer:
+        with file_path.open(
+            "wb"
+        ) as buffer:
 
             shutil.copyfileobj(
                 file.file,
-                buffer
+                buffer,
             )
 
     except Exception as error:
@@ -339,8 +421,8 @@ async def save_uploaded_file(file):
             detail=(
                 "Could not save uploaded "
                 f"file: {error}"
-            )
-        )
+            ),
+        ) from error
 
     finally:
 
@@ -349,21 +431,436 @@ async def save_uploaded_file(file):
     return (
         original_filename,
         unique_filename,
-        file_path
+        file_path,
     )
+
+
+# ============================================================
+# VALIDATE DATASET ID
+# ============================================================
+
+def validate_dataset_id(
+    dataset_id: str
+) -> str:
+
+    if not isinstance(
+        dataset_id,
+        str,
+    ):
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Dataset ID must be a string."
+            ),
+        )
+
+    dataset_id = (
+        dataset_id.strip()
+    )
+
+    if not dataset_id:
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Dataset ID cannot be empty."
+            ),
+        )
+
+    return dataset_id
+
+
+# ============================================================
+# VALIDATE QUESTION
+# ============================================================
+
+def validate_question(
+    question: str
+) -> str:
+
+    if not isinstance(
+        question,
+        str,
+    ):
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Question must be a string."
+            ),
+        )
+
+    question = (
+        question.strip()
+    )
+
+    if not question:
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Question cannot be empty."
+            ),
+        )
+
+    return question
+
+
+# ============================================================
+# BUILD PREPARATION RESPONSE
+# ============================================================
+
+def build_preparation_response(
+    *,
+    result,
+    original_filename,
+    stored_filename,
+):
+    """
+    Normalize AnalyticsWorkflow.prepare_dataset()
+    into the API response contract.
+    """
+
+    quality = result.get(
+        "quality",
+        {},
+    )
+
+    if not isinstance(
+        quality,
+        dict,
+    ):
+
+        quality = {}
+
+    cleaning = result.get(
+        "cleaning",
+        {},
+    )
+
+    if not isinstance(
+        cleaning,
+        dict,
+    ):
+
+        cleaning = {}
+
+    anomalies = result.get(
+        "anomalies",
+        {},
+    )
+
+    if not isinstance(
+        anomalies,
+        dict,
+    ):
+
+        anomalies = {}
+
+    schema = result.get(
+        "schema",
+        {},
+    )
+
+    if not isinstance(
+        schema,
+        dict,
+    ):
+
+        schema = {}
+
+    return {
+
+        "success":
+            True,
+
+        "dataset_id":
+            result.get(
+                "dataset_id"
+            ),
+
+        "file": {
+
+            "original_name":
+                original_filename,
+
+            "stored_name":
+                stored_filename,
+        },
+
+        "dataset": {
+
+            "rows":
+                result.get(
+                    "rows"
+                ),
+
+            "columns":
+                result.get(
+                    "columns",
+                    [],
+                ),
+
+            "column_count":
+                result.get(
+                    "column_count"
+                ),
+        },
+
+        "schema":
+            schema,
+
+        "quality":
+            quality,
+
+        "anomalies":
+            anomalies,
+
+        "cleaning":
+            cleaning,
+
+        "eda":
+            result.get(
+                "eda_results",
+                {},
+            ),
+
+        "visualizations":
+            result.get(
+                "eda_charts",
+                [],
+            ),
+
+        "chart_count":
+            result.get(
+                "chart_count",
+                0,
+            ),
+
+        "statistical_findings":
+            result.get(
+                "statistical_findings",
+                [],
+            ),
+
+        "statistical_finding_count":
+            result.get(
+                "statistical_finding_count",
+                0,
+            ),
+    }
+
+
+# ============================================================
+# BUILD AGENT RESPONSE
+# ============================================================
+
+def build_agent_response(
+    result
+):
+    """
+    Normalize AgentService output for the frontend/API.
+
+    The full orchestration metadata is intentionally
+    retained during development so planner/executor/
+    recovery behavior can be inspected.
+    """
+
+    return {
+
+        "success":
+            result.get(
+                "success",
+                False,
+            ),
+
+        "completed":
+            result.get(
+                "completed",
+                False,
+            ),
+
+        "dataset_id":
+            result.get(
+                "dataset_id"
+            ),
+
+        "question":
+            result.get(
+                "question"
+            ),
+
+        # ====================================================
+        # PLANNING
+        # ====================================================
+
+        "agent": {
+
+            "intent":
+                result.get(
+                    "intent"
+                ),
+
+            "plan":
+                result.get(
+                    "plan",
+                    [],
+                ),
+
+            "plan_reasoning":
+                result.get(
+                    "plan_reasoning"
+                ),
+
+            "planner_source":
+                result.get(
+                    "planner_source"
+                ),
+
+            "planner_error":
+                result.get(
+                    "planner_error"
+                ),
+
+            "executed_tools":
+                result.get(
+                    "executed_tools",
+                    [],
+                ),
+        },
+
+        # ====================================================
+        # ANALYSIS
+        # ====================================================
+
+        "analysis": {
+
+            "generated_sql":
+                result.get(
+                    "generated_sql"
+                ),
+
+            "sql_result":
+                dataframe_to_records(
+                    result.get(
+                        "sql_result"
+                    )
+                ),
+
+            "tool_outputs":
+                result.get(
+                    "tool_outputs",
+                    {},
+                ),
+        },
+
+        # ====================================================
+        # VISUALIZATION
+        # ====================================================
+
+        "visualization":
+            result.get(
+                "visualization"
+            ),
+
+        # ====================================================
+        # INSIGHT
+        # ====================================================
+
+        "insight":
+            result.get(
+                "insight"
+            ),
+
+        "statistical_findings":
+            result.get(
+                "statistical_findings",
+                [],
+            ),
+
+        # ====================================================
+        # EXECUTION / RECOVERY
+        # ====================================================
+
+        "execution": {
+
+            "tool_results":
+                result.get(
+                    "tool_results",
+                    {},
+                ),
+
+            "retry_count":
+                result.get(
+                    "retry_count",
+                    0,
+                ),
+
+            "max_retries":
+                result.get(
+                    "max_retries",
+                    2,
+                ),
+
+            "replan_count":
+                result.get(
+                    "replan_count",
+                    0,
+                ),
+
+            "max_replans":
+                result.get(
+                    "max_replans",
+                    2,
+                ),
+
+            "failed_tool":
+                result.get(
+                    "failed_tool"
+                ),
+
+            "last_tool_error":
+                result.get(
+                    "last_tool_error"
+                ),
+        },
+
+        "trace":
+            result.get(
+                "trace",
+                [],
+            ),
+
+        "error":
+            result.get(
+                "error"
+            ),
+    }
 
 
 # ============================================================
 # HEALTH
 # ============================================================
 
-@router.get("/health")
+@router.get(
+    "/health"
+)
 def api_health():
 
     return {
-        "status": "healthy",
-        "service": "InsightFlow Analytics API",
-        "active_datasets": dataset_manager.count()
+
+        "status":
+            "healthy",
+
+        "service":
+            "InsightFlow Analytics API",
+
+        "active_datasets":
+            dataset_manager.count(),
+
+        "agentic_layer":
+            "enabled",
     }
 
 
@@ -371,7 +868,9 @@ def api_health():
 # PREPARE DATASET
 # ============================================================
 
-@router.post("/datasets")
+@router.post(
+    "/datasets"
+)
 async def prepare_dataset(
     file: UploadFile = File(...)
 ):
@@ -379,36 +878,68 @@ async def prepare_dataset(
     (
         original_filename,
         stored_filename,
-        file_path
-    ) = await save_uploaded_file(file)
+        file_path,
+    ) = await save_uploaded_file(
+        file
+    )
 
     try:
 
-        workflow = AnalyticsWorkflow()
+        # ----------------------------------------------------
+        # Dataset preparation remains deterministic.
+        # ----------------------------------------------------
 
-        result = workflow.prepare_dataset(
-            file_path=str(file_path),
-            original_filename=original_filename
+        workflow = (
+            AnalyticsWorkflow()
         )
+
+        result = (
+            workflow.prepare_dataset(
+                file_path=str(
+                    file_path
+                ),
+                original_filename=(
+                    original_filename
+                ),
+            )
+        )
+
+        if not isinstance(
+            result,
+            dict,
+        ):
+
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Dataset preparation returned "
+                    "an invalid response."
+                ),
+            )
 
         if not result.get(
             "success",
-            False
+            False,
         ):
 
             raise HTTPException(
                 status_code=500,
                 detail={
+
                     "message":
                         "Dataset preparation failed.",
 
                     "error":
-                        result.get("error")
-                }
+                        result.get(
+                            "error"
+                        ),
+                },
             )
 
-        dataset_id = result.get(
-            "dataset_id"
+        dataset_id = (
+            result.get(
+                "dataset_id"
+            )
         )
 
         if not dataset_id:
@@ -418,114 +949,20 @@ async def prepare_dataset(
                 detail=(
                     "Dataset preparation completed "
                     "without creating a dataset session."
-                )
+                ),
             )
 
-        before_score = result.get(
-            "before_score"
-        )
-
-        after_score = result.get(
-            "after_score"
-        )
-
-        improvement = None
-
-        if (
-            before_score is not None
-            and
-            after_score is not None
-        ):
-
-            improvement = round(
-                after_score - before_score,
-                2
-            )
-
-        response = {
-
-            "success":
-                True,
-
-            "dataset_id":
-                dataset_id,
-
-            "file": {
-
-                "original_name":
-                    original_filename,
-
-                "stored_name":
+        response = (
+            build_preparation_response(
+                result=result,
+                original_filename=(
+                    original_filename
+                ),
+                stored_filename=(
                     stored_filename
-            },
-
-            "dataset": {
-
-                "original_rows":
-                    result.get(
-                        "original_rows"
-                    ),
-
-                "cleaned_rows":
-                    result.get(
-                        "cleaned_rows"
-                    ),
-
-                "columns":
-                    result.get(
-                        "columns",
-                        []
-                    )
-            },
-
-            "quality": {
-
-                "before_score":
-                    before_score,
-
-                "after_score":
-                    after_score,
-
-                "improvement":
-                    improvement,
-
-                "cleaning_log":
-                    result.get(
-                        "cleaning_log",
-                        []
-                    ),
-
-                "quality_report":
-                    result.get(
-                        "quality_report",
-                        {}
-                    ),
-
-                "anomalies":
-                    result.get(
-                        "anomalies",
-                        {}
-                    )
-            },
-
-            "eda":
-                result.get(
-                    "eda_results",
-                    {}
                 ),
-
-            "visualizations":
-                result.get(
-                    "eda_charts",
-                    []
-                ),
-
-            "statistical_findings":
-                result.get(
-                    "statistical_findings",
-                    []
-                )
-        }
+            )
+        )
 
         return make_json_safe(
             response
@@ -539,12 +976,18 @@ async def prepare_dataset(
         raise HTTPException(
             status_code=500,
             detail={
+
                 "message":
-                    "Unexpected dataset preparation error.",
+                    (
+                        "Unexpected dataset "
+                        "preparation error."
+                    ),
 
                 "error":
-                    str(error)
-            }
+                    str(
+                        error
+                    ),
+            },
         ) from error
 
 
@@ -552,38 +995,24 @@ async def prepare_dataset(
 # GET DATASET
 # ============================================================
 
-@router.get("/datasets/{dataset_id}")
+@router.get(
+    "/datasets/{dataset_id}"
+)
 def get_dataset(
     dataset_id: str
 ):
 
-    """
-    Retrieve a prepared dataset session.
-
-    Dataset sessions belong to DatasetManager, not
-    AnalyticsWorkflow.
-    """
-
     dataset_id = (
-        dataset_id.strip()
-        if isinstance(
-            dataset_id,
-            str
+        validate_dataset_id(
+            dataset_id
         )
-        else ""
     )
-
-    if not dataset_id:
-
-        raise HTTPException(
-            status_code=400,
-            detail="Dataset ID cannot be empty."
-        )
 
     try:
 
         dataset_info = (
-            dataset_manager.get_dataset_info(
+            dataset_manager
+            .get_dataset_info(
                 dataset_id
             )
         )
@@ -594,7 +1023,7 @@ def get_dataset(
                 status_code=404,
                 detail=(
                     "Dataset session not found."
-                )
+                ),
             )
 
         return make_json_safe({
@@ -603,7 +1032,7 @@ def get_dataset(
                 True,
 
             "dataset":
-                dataset_info
+                dataset_info,
         })
 
     except HTTPException:
@@ -614,17 +1043,23 @@ def get_dataset(
         raise HTTPException(
             status_code=500,
             detail={
+
                 "message":
-                    "Could not retrieve dataset session.",
+                    (
+                        "Could not retrieve "
+                        "dataset session."
+                    ),
 
                 "error":
-                    str(error)
-            }
+                    str(
+                        error
+                    ),
+            },
         ) from error
 
 
 # ============================================================
-# ASK DATASET
+# ASK DATASET THROUGH AGENT GRAPH
 # ============================================================
 
 @router.post(
@@ -632,46 +1067,29 @@ def get_dataset(
 )
 def ask_dataset(
     dataset_id: str,
-    question: str = Form(...)
+    question: str = Form(...),
 ):
+    """
+    Run a natural-language analytics request through
+    the autonomous InsightFlow agent graph.
 
-    if not isinstance(
-        question,
-        str
-    ):
-
-        raise HTTPException(
-            status_code=400,
-            detail="Question must be a string."
-        )
-
-    question = question.strip()
-
-    if not question:
-
-        raise HTTPException(
-            status_code=400,
-            detail="Question cannot be empty."
-        )
+    Dataset preparation is NOT repeated.
+    """
 
     dataset_id = (
-        dataset_id.strip()
-        if isinstance(
-            dataset_id,
-            str
+        validate_dataset_id(
+            dataset_id
         )
-        else ""
     )
 
-    if not dataset_id:
-
-        raise HTTPException(
-            status_code=400,
-            detail="Dataset ID cannot be empty."
+    question = (
+        validate_question(
+            question
         )
+    )
 
     # --------------------------------------------------------
-    # CHECK SESSION BEFORE RUNNING ANALYTICS
+    # Check before invoking agent
     # --------------------------------------------------------
 
     if not dataset_manager.exists(
@@ -680,29 +1098,52 @@ def ask_dataset(
 
         raise HTTPException(
             status_code=404,
-            detail="Dataset session not found."
+            detail=(
+                "Dataset session not found."
+            ),
         )
 
     try:
 
-        workflow = AnalyticsWorkflow()
-
-        result = workflow.ask_dataset(
-            dataset_id=dataset_id,
-            question=question
+        result = (
+            agent_service.run(
+                dataset_id=dataset_id,
+                question=question,
+            )
         )
 
+        if not isinstance(
+            result,
+            dict,
+        ):
+
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Agent service returned "
+                    "an invalid response."
+                ),
+            )
+
         # ----------------------------------------------------
-        # TRUE WORKFLOW FAILURE
+        # Agent completed unsuccessfully
         # ----------------------------------------------------
 
         if not result.get(
             "success",
-            False
+            False,
         ):
 
-            error = result.get(
-                "error"
+            error = (
+                result.get(
+                    "error"
+                )
+                or
+                result.get(
+                    "last_tool_error"
+                )
+                or
+                "Agent execution failed."
             )
 
             if (
@@ -713,132 +1154,58 @@ def ask_dataset(
 
                 raise HTTPException(
                     status_code=404,
-                    detail=error
+                    detail=error,
                 )
 
             raise HTTPException(
                 status_code=500,
-                detail={
+                detail=make_json_safe({
+
                     "message":
-                        "Dataset question failed.",
+                        (
+                            "Agent analytics "
+                            "request failed."
+                        ),
 
                     "error":
                         error,
 
-                    "generated_sql":
-                        make_json_safe(
-                            result.get(
-                                "generated_sql"
-                            )
+                    "failed_tool":
+                        result.get(
+                            "failed_tool"
                         ),
 
-                    "sql_attempts":
-                        make_json_safe(
-                            result.get(
-                                "sql_attempts",
-                                []
-                            )
-                        )
-                }
-            )
-
-        # ----------------------------------------------------
-        # SQL RESULT
-        # ----------------------------------------------------
-
-        sql_records = dataframe_to_records(
-            result.get(
-                "sql_result"
-            )
-        )
-
-        insight_source = result.get(
-            "insight_source"
-        )
-
-        # ----------------------------------------------------
-        # RESPONSE
-        # ----------------------------------------------------
-
-        response = {
-
-            "success":
-                True,
-
-            "dataset_id":
-                dataset_id,
-
-            "question":
-                question,
-
-            "analysis": {
-
-                "generated_sql":
-                    result.get(
-                        "generated_sql"
-                    ),
-
-                "sql_result":
-                    sql_records,
-
-                "sql_attempts":
-                    result.get(
-                        "sql_attempts",
-                        []
-                    ),
-
-                "relevant_columns":
-                    result.get(
-                        "relevant_columns",
-                        []
-                    )
-            },
-
-            "visualization":(
-                result.get("chart")
-                or result.get("visualization")
-                or result.get("result_chart")
-                    
-                ),
-
-            "insight":
-                result.get(
-                    "insight"
-                ),
-
-            "statistical_findings":
-                result.get(
-                    "statistical_findings",
-                    []
-                ),
-
-            "insight_status": {
-
-                "available":
-                    bool(
+                    "plan":
                         result.get(
-                            "insight"
-                        )
-                    ),
+                            "plan",
+                            [],
+                        ),
 
-                "source":
-                    insight_source,
+                    "executed_tools":
+                        result.get(
+                            "executed_tools",
+                            [],
+                        ),
 
-                "llm_success":
-                    (
-                        insight_source
-                        ==
-                        "llm"
-                    ),
+                    "replan_count":
+                        result.get(
+                            "replan_count",
+                            0,
+                        ),
 
-                "fallback_used":
-                    (
-                        insight_source
-                        ==
-                        "fallback"
-                    )
-            }
-        }
+                    "trace":
+                        result.get(
+                            "trace",
+                            [],
+                        ),
+                }),
+            )
+
+        response = (
+            build_agent_response(
+                result
+            )
+        )
 
         return make_json_safe(
             response
@@ -847,17 +1214,35 @@ def ask_dataset(
     except HTTPException:
         raise
 
+    except (
+        TypeError,
+        ValueError,
+    ) as error:
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(
+                error
+            ),
+        ) from error
+
     except Exception as error:
 
         raise HTTPException(
             status_code=500,
             detail={
+
                 "message":
-                    "Unexpected dataset question error.",
+                    (
+                        "Unexpected agent "
+                        "execution error."
+                    ),
 
                 "error":
-                    str(error)
-            }
+                    str(
+                        error
+                    ),
+            },
         ) from error
 
 
@@ -872,30 +1257,17 @@ def delete_dataset(
     dataset_id: str
 ):
 
-    """
-    Delete a dataset directly from DatasetManager.
-    """
-
     dataset_id = (
-        dataset_id.strip()
-        if isinstance(
-            dataset_id,
-            str
+        validate_dataset_id(
+            dataset_id
         )
-        else ""
     )
-
-    if not dataset_id:
-
-        raise HTTPException(
-            status_code=400,
-            detail="Dataset ID cannot be empty."
-        )
 
     try:
 
         deleted = (
-            dataset_manager.delete_dataset(
+            dataset_manager
+            .delete_dataset(
                 dataset_id
             )
         )
@@ -906,7 +1278,7 @@ def delete_dataset(
                 status_code=404,
                 detail=(
                     "Dataset session not found."
-                )
+                ),
             )
 
         return {
@@ -918,7 +1290,9 @@ def delete_dataset(
                 dataset_id,
 
             "message":
-                "Dataset session deleted."
+                (
+                    "Dataset session deleted."
+                ),
         }
 
     except HTTPException:
@@ -929,89 +1303,115 @@ def delete_dataset(
         raise HTTPException(
             status_code=500,
             detail={
+
                 "message":
-                    "Could not delete dataset session.",
+                    (
+                        "Could not delete "
+                        "dataset session."
+                    ),
 
                 "error":
-                    str(error)
-            }
+                    str(
+                        error
+                    ),
+            },
         ) from error
 
 
 # ============================================================
-# LEGACY ANALYZE
+# LEGACY ONE-SHOT ANALYZE
 # ============================================================
 
-@router.post("/analyze")
+@router.post(
+    "/analyze"
+)
 async def analyze_dataset(
     file: UploadFile = File(...),
-    question: str = Form(...)
+    question: str = Form(...),
 ):
-
     """
-    Legacy one-shot endpoint.
+    Backward-compatible one-shot endpoint.
 
-    Upload dataset -> prepare -> ask question -> return result.
+    Flow:
 
-    Kept for backward compatibility.
+        upload
+          ↓
+        deterministic preparation
+          ↓
+        DatasetManager
+          ↓
+        autonomous agent graph
+          ↓
+        response
     """
 
-    if not isinstance(
-        question,
-        str
-    ):
-
-        raise HTTPException(
-            status_code=400,
-            detail="Question must be a string."
+    question = (
+        validate_question(
+            question
         )
-
-    question = question.strip()
-
-    if not question:
-
-        raise HTTPException(
-            status_code=400,
-            detail="Question cannot be empty."
-        )
+    )
 
     (
         original_filename,
-        unique_filename,
-        file_path
-    ) = await save_uploaded_file(file)
+        stored_filename,
+        file_path,
+    ) = await save_uploaded_file(
+        file
+    )
 
     try:
 
-        workflow = AnalyticsWorkflow()
+        # ====================================================
+        # 1. PREPARE DATASET
+        # ====================================================
 
-        # ----------------------------------------------------
-        # PREPARE DATASET
-        # ----------------------------------------------------
+        workflow = (
+            AnalyticsWorkflow()
+        )
 
         preparation_result = (
             workflow.prepare_dataset(
-                file_path=str(file_path),
-                original_filename=original_filename
+                file_path=str(
+                    file_path
+                ),
+                original_filename=(
+                    original_filename
+                ),
             )
         )
 
+        if not isinstance(
+            preparation_result,
+            dict,
+        ):
+
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Dataset preparation returned "
+                    "an invalid response."
+                ),
+            )
+
         if not preparation_result.get(
             "success",
-            False
+            False,
         ):
 
             raise HTTPException(
                 status_code=500,
                 detail={
+
                     "message":
-                        "Dataset preparation failed.",
+                        (
+                            "Dataset preparation failed."
+                        ),
 
                     "error":
                         preparation_result.get(
                             "error"
-                        )
-                }
+                        ),
+                },
             )
 
         dataset_id = (
@@ -1027,97 +1427,124 @@ async def analyze_dataset(
                 detail=(
                     "Dataset preparation completed "
                     "without creating a session."
-                )
+                ),
             )
 
-        # ----------------------------------------------------
-        # ASK QUESTION
-        # ----------------------------------------------------
+        # ====================================================
+        # 2. RUN AGENT
+        # ====================================================
 
-        result = workflow.ask_dataset(
-            dataset_id=dataset_id,
-            question=question
+        agent_result = (
+            agent_service.run(
+                dataset_id=dataset_id,
+                question=question,
+            )
         )
 
-        if not result.get(
-            "success",
-            False
+        if not isinstance(
+            agent_result,
+            dict,
         ):
 
             raise HTTPException(
                 status_code=500,
-                detail={
-                    "message":
-                        "Analytics workflow failed.",
-
-                    "error":
-                        result.get(
-                            "error"
-                        ),
-
-                    "generated_sql":
-                        make_json_safe(
-                            result.get(
-                                "generated_sql"
-                            )
-                        ),
-
-                    "sql_attempts":
-                        make_json_safe(
-                            result.get(
-                                "sql_attempts",
-                                []
-                            )
-                        )
-                }
+                detail=(
+                    "Agent service returned "
+                    "an invalid response."
+                ),
             )
 
-        # ----------------------------------------------------
-        # DATASET INFORMATION
-        # ----------------------------------------------------
+        if not agent_result.get(
+            "success",
+            False,
+        ):
+
+            raise HTTPException(
+                status_code=500,
+                detail=make_json_safe({
+
+                    "message":
+                        (
+                            "Agent analytics "
+                            "request failed."
+                        ),
+
+                    "error":
+                        (
+                            agent_result.get(
+                                "error"
+                            )
+                            or
+                            agent_result.get(
+                                "last_tool_error"
+                            )
+                        ),
+
+                    "failed_tool":
+                        agent_result.get(
+                            "failed_tool"
+                        ),
+
+                    "plan":
+                        agent_result.get(
+                            "plan",
+                            [],
+                        ),
+
+                    "executed_tools":
+                        agent_result.get(
+                            "executed_tools",
+                            [],
+                        ),
+
+                    "replan_count":
+                        agent_result.get(
+                            "replan_count",
+                            0,
+                        ),
+                }),
+            )
+
+        # ====================================================
+        # 3. DATASET INFORMATION
+        # ====================================================
 
         dataset_info = (
-            dataset_manager.get_dataset_info(
+            dataset_manager
+            .get_dataset_info(
                 dataset_id
             )
         )
 
-        sql_records = (
-            dataframe_to_records(
-                result.get(
-                    "sql_result"
-                )
+        # ====================================================
+        # 4. PREPARATION RESPONSE
+        # ====================================================
+
+        preparation_response = (
+            build_preparation_response(
+                result=preparation_result,
+                original_filename=(
+                    original_filename
+                ),
+                stored_filename=(
+                    stored_filename
+                ),
             )
         )
 
-        before_score = (
-            preparation_result.get(
-                "before_score"
+        # ====================================================
+        # 5. AGENT RESPONSE
+        # ====================================================
+
+        analysis_response = (
+            build_agent_response(
+                agent_result
             )
         )
 
-        after_score = (
-            preparation_result.get(
-                "after_score"
-            )
-        )
-
-        improvement = None
-
-        if (
-            before_score is not None
-            and
-            after_score is not None
-        ):
-
-            improvement = round(
-                after_score - before_score,
-                2
-            )
-
-        # ----------------------------------------------------
-        # RESPONSE
-        # ----------------------------------------------------
+        # ====================================================
+        # FINAL ONE-SHOT RESPONSE
+        # ====================================================
 
         response = {
 
@@ -1127,154 +1554,101 @@ async def analyze_dataset(
             "dataset_id":
                 dataset_id,
 
-            "file": {
-
-                "original_name":
-                    original_filename,
-
-                "stored_name":
-                    unique_filename
-            },
+            "file":
+                preparation_response.get(
+                    "file"
+                ),
 
             "question":
                 question,
 
-            "dataset": {
-
-                "original_rows":
-                    preparation_result.get(
-                        "original_rows"
-                    ),
-
-                "cleaned_rows":
-                    preparation_result.get(
-                        "cleaned_rows"
-                    ),
-
-                "columns":
-                    preparation_result.get(
-                        "columns",
-                        []
-                    )
-            },
+            "dataset":
+                preparation_response.get(
+                    "dataset"
+                ),
 
             "dataset_info":
                 dataset_info,
 
-            "quality": {
+            "schema":
+                preparation_response.get(
+                    "schema",
+                    {},
+                ),
 
-                "before_score":
-                    before_score,
+            "quality":
+                preparation_response.get(
+                    "quality",
+                    {},
+                ),
 
-                "after_score":
-                    after_score,
+            "anomalies":
+                preparation_response.get(
+                    "anomalies",
+                    {},
+                ),
 
-                "improvement":
-                    improvement,
-
-                "cleaning_log":
-                    preparation_result.get(
-                        "cleaning_log",
-                        []
-                    ),
-
-                "quality_report":
-                    preparation_result.get(
-                        "quality_report",
-                        {}
-                    ),
-
-                "anomalies":
-                    preparation_result.get(
-                        "anomalies",
-                        {}
-                    )
-            },
+            "cleaning":
+                preparation_response.get(
+                    "cleaning",
+                    {},
+                ),
 
             "eda":
-                preparation_result.get(
-                    "eda_results",
-                    {}
+                preparation_response.get(
+                    "eda",
+                    {},
                 ),
 
             "visualizations":
-                preparation_result.get(
-                    "eda_charts",
-                    []
+                preparation_response.get(
+                    "visualizations",
+                    [],
                 ),
 
             "statistical_findings":
-                preparation_result.get(
+                preparation_response.get(
                     "statistical_findings",
-                    []
+                    [],
                 ),
 
-            "analysis": {
+            # =================================================
+            # AGENTIC ANALYSIS
+            # =================================================
 
-                "generated_sql":
-                    result.get(
-                        "generated_sql"
-                    ),
+            "agent":
+                analysis_response.get(
+                    "agent",
+                    {},
+                ),
 
-                "sql_result":
-                    sql_records,
+            "analysis":
+                analysis_response.get(
+                    "analysis",
+                    {},
+                ),
 
-                "sql_attempts":
-                    result.get(
-                        "sql_attempts",
-                        []
-                    ),
-
-                "relevant_columns":
-                    result.get(
-                        "relevant_columns",
-                        []
-                    )
-            },
-
-            "visualization":(
-                result.get("chart")
-                or result.get("visualization")
-                    
+            "visualization":
+                analysis_response.get(
+                    "visualization"
                 ),
 
             "insight":
-                result.get(
+                analysis_response.get(
                     "insight"
                 ),
 
-            "insight_status": {
+            "execution":
+                analysis_response.get(
+                    "execution",
+                    {},
+                ),
 
-                "available":
-                    bool(
-                        result.get(
-                            "insight"
-                        )
-                    ),
-
-                "source":
-                    result.get(
-                        "insight_source"
-                    ),
-
-                "llm_success":
-                    (
-                        result.get(
-                            "insight_source"
-                        )
-                        ==
-                        "llm"
-                    ),
-
-                "fallback_used":
-                    (
-                        result.get(
-                            "insight_source"
-                        )
-                        ==
-                        "fallback"
-                    )
-            }
+            "trace":
+                analysis_response.get(
+                    "trace",
+                    [],
+                ),
         }
 
         return make_json_safe(
@@ -1284,15 +1658,33 @@ async def analyze_dataset(
     except HTTPException:
         raise
 
+    except (
+        TypeError,
+        ValueError,
+    ) as error:
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(
+                error
+            ),
+        ) from error
+
     except Exception as error:
 
         raise HTTPException(
             status_code=500,
             detail={
+
                 "message":
-                    "Unexpected analytics workflow error.",
+                    (
+                        "Unexpected analytics "
+                        "workflow error."
+                    ),
 
                 "error":
-                    str(error)
-            }
+                    str(
+                        error
+                    ),
+            },
         ) from error
