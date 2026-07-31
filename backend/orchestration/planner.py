@@ -3,11 +3,20 @@ import json
 from pydantic import BaseModel, Field
 
 from backend.orchestration.state import AgentState
-from backend.services.llm_service import LLMService
-from backend.orchestration.tool_registry import (
-    get_available_tools,
+
+from backend.services.llm_service import (
+    LLMService,
 )
 
+from backend.orchestration.tool_registry import (
+    get_available_tools,
+    get_tool_descriptions,
+)
+
+
+# ============================================================
+# ANALYTICS PLAN
+# ============================================================
 
 class AnalyticsPlan(BaseModel):
     """
@@ -16,10 +25,8 @@ class AnalyticsPlan(BaseModel):
 
     intent: str = Field(
         description=(
-            "Short analytical intent such as "
-            "aggregation, visualization, "
-            "relationship_analysis, dataset_context, "
-            "or general_analysis."
+            "Short analytical intent describing "
+            "what the user wants to accomplish."
         )
     )
 
@@ -38,6 +45,10 @@ class AnalyticsPlan(BaseModel):
     )
 
 
+# ============================================================
+# FALLBACK PLAN
+# ============================================================
+
 def _fallback_plan(
     question: str
 ) -> AnalyticsPlan:
@@ -52,6 +63,10 @@ def _fallback_plan(
     question_lower = question.lower()
 
     tools = []
+
+    # --------------------------------------------------------
+    # Dataset context
+    # --------------------------------------------------------
 
     if any(
         word in question_lower
@@ -68,6 +83,10 @@ def _fallback_plan(
         tools.append(
             "dataset_context"
         )
+
+    # --------------------------------------------------------
+    # SQL analysis
+    # --------------------------------------------------------
 
     if any(
         word in question_lower
@@ -95,6 +114,10 @@ def _fallback_plan(
             "sql"
         )
 
+    # --------------------------------------------------------
+    # Visualization
+    # --------------------------------------------------------
+
     if any(
         word in question_lower
         for word in [
@@ -118,6 +141,10 @@ def _fallback_plan(
             "visualization"
         )
 
+    # --------------------------------------------------------
+    # Insight
+    # --------------------------------------------------------
+
     if any(
         word in question_lower
         for word in [
@@ -136,14 +163,23 @@ def _fallback_plan(
             "insight"
         )
 
+    # --------------------------------------------------------
+    # Default fallback
+    # --------------------------------------------------------
+
     if not tools:
+
         tools = [
             "sql",
             "insight",
         ]
 
+    # Remove duplicates while preserving order.
+
     tools = list(
-        dict.fromkeys(tools)
+        dict.fromkeys(
+            tools
+        )
     )
 
     return AnalyticsPlan(
@@ -158,12 +194,79 @@ def _fallback_plan(
     )
 
 
+# ============================================================
+# BUILD AVAILABLE TOOL CATALOG
+# ============================================================
+
+def _build_tool_catalog() -> str:
+    """
+    Build the tool catalog presented to the LLM planner
+    dynamically from the central tool registry.
+
+    This prevents the planner from maintaining its own
+    hard-coded list of available capabilities.
+    """
+
+    tool_descriptions = (
+        get_tool_descriptions()
+    )
+
+    catalog = []
+
+    for (
+        tool_name,
+        metadata
+    ) in tool_descriptions.items():
+
+        catalog.append({
+            "name":
+                tool_name,
+
+            "description":
+                metadata.get(
+                    "description",
+                    ""
+                ),
+
+            "inputs":
+                metadata.get(
+                    "inputs",
+                    {}
+                ),
+
+            "outputs":
+                metadata.get(
+                    "outputs",
+                    {}
+                ),
+
+            "dependencies":
+                metadata.get(
+                    "dependencies",
+                    []
+                ),
+        })
+
+    return json.dumps(
+        catalog,
+        indent=2
+    )
+
+
+# ============================================================
+# BUILD PLANNER PROMPT
+# ============================================================
+
 def _build_planner_prompt(
     question: str
 ) -> str:
+    """
+    Build the LLM planning prompt using capabilities
+    discovered dynamically from the tool registry.
+    """
 
-    available_tools = (
-        get_available_tools()
+    tool_catalog = (
+        _build_tool_catalog()
     )
 
     return f"""
@@ -171,61 +274,49 @@ You are the planning agent for InsightFlow AI.
 
 Your job is NOT to answer the user's analytical question.
 
-Your job is to decide which tools should be executed and
-in what order.
+Your job is to decide which available tools should be
+executed and in what order.
 
 USER QUESTION:
+
 {question}
 
+
 AVAILABLE TOOLS:
-{available_tools}
 
-TOOL CAPABILITIES:
+{tool_catalog}
 
-dataset_context:
-Use for dataset metadata, columns, schema, dimensions,
-existing quality information, anomalies, EDA results,
-statistical findings, and available charts.
-
-sql:
-Use for calculations and data retrieval such as filtering,
-aggregation, grouping, ranking, totals, averages, counts,
-comparisons, and analytical queries.
-
-visualization:
-Use when the user explicitly requests a chart, plot,
-graph, visualization, distribution visualization,
-relationship visualization, trend visualization, or KPI.
-
-insight:
-Use when interpretation, explanation, recommendations,
-summary, analytical findings, or business insight is needed.
 
 RULES:
 
 1. Return ONLY valid JSON.
 
-2. Use only tools from:
-{available_tools}
+2. Do not use markdown or code fences.
 
-3. Keep the plan minimal.
+3. Use only tools listed in AVAILABLE TOOLS.
+
+4. Keep the execution plan minimal.
 Do not invoke unnecessary tools.
 
-4. Preserve execution dependencies.
+5. Preserve execution dependencies.
 
-For example:
-SQL should occur before visualization when the requested
-visualization depends on an analytical SQL result.
+If one tool depends on the output of another tool,
+the dependency must appear earlier in the plan.
 
-SQL should occur before insight when the insight depends
-on query results.
+Use the dependency metadata provided in AVAILABLE TOOLS
+when deciding execution order.
 
-5. dataset_context does NOT need to be called for every
-request.
+6. Do not invent tool names.
 
-6. Do not answer the analytical question yourself.
+7. Do not assume capabilities that are not described
+in AVAILABLE TOOLS.
 
-7. The JSON must have exactly this structure:
+8. Do not answer the analytical question yourself.
+
+9. Order the tools exactly in the sequence in which
+they should execute.
+
+10. The JSON must have exactly this structure:
 
 {{
     "intent": "short_intent_name",
@@ -235,9 +326,16 @@ request.
 """.strip()
 
 
+# ============================================================
+# PARSE PLAN
+# ============================================================
+
 def _parse_plan(
     raw_response
 ) -> AnalyticsPlan:
+    """
+    Parse an LLM response into AnalyticsPlan.
+    """
 
     if isinstance(
         raw_response,
@@ -257,7 +355,14 @@ def _parse_plan(
         raw_response
     ).strip()
 
-    if text.startswith("```"):
+    # --------------------------------------------------------
+    # Remove markdown JSON fences if the model added them
+    # despite the prompt instructions.
+    # --------------------------------------------------------
+
+    if text.startswith(
+        "```"
+    ):
 
         text = text.replace(
             "```json",
@@ -280,9 +385,17 @@ def _parse_plan(
     )
 
 
+# ============================================================
+# PLANNER NODE
+# ============================================================
+
 def planner_node(
     state: AgentState
 ) -> dict:
+    """
+    Generate an execution plan for the current
+    analytical request.
+    """
 
     question = (
         state.get(
@@ -299,87 +412,142 @@ def planner_node(
         )
     )
 
+    # --------------------------------------------------------
+    # Registry is the source of truth for valid tool names.
+    # --------------------------------------------------------
+
     available_tools = set(
         get_available_tools()
     )
 
     try:
 
-        llm_service = LLMService()
+        # ====================================================
+        # CALL LLM PLANNER
+        # ====================================================
 
-        prompt = _build_planner_prompt(
-            question
+        llm_service = (
+            LLMService()
         )
 
-        # IMPORTANT:
-        # This must call the method your current
-        # LLMService exposes for plain text generation.
+        prompt = (
+            _build_planner_prompt(
+                question
+            )
+        )
+
         raw_response = (
             llm_service.generate(
                 prompt
             )
         )
 
-        plan_result = _parse_plan(
-            raw_response
+        plan_result = (
+            _parse_plan(
+                raw_response
+            )
         )
+
+        # ====================================================
+        # VALIDATE LLM TOOL SELECTION
+        # ====================================================
 
         valid_tools = [
             tool_name
-            for tool_name in plan_result.tools
-            if tool_name in available_tools
+            for tool_name
+            in plan_result.tools
+            if tool_name
+            in available_tools
         ]
 
+        # Remove duplicates while preserving order.
+
         valid_tools = list(
-            dict.fromkeys(valid_tools)
+            dict.fromkeys(
+                valid_tools
+            )
         )
 
         if not valid_tools:
+
             raise ValueError(
                 "Planner returned no valid tools."
             )
 
-        planner_source = "llm"
+        planner_source = (
+            "llm"
+        )
+
+        planner_error = (
+            None
+        )
 
     except Exception as exc:
 
-        plan_result = _fallback_plan(
-            question
+        # ====================================================
+        # FALLBACK PLANNER
+        # ====================================================
+
+        plan_result = (
+            _fallback_plan(
+                question
+            )
         )
 
-        valid_tools = (
-            plan_result.tools
+        # Validate fallback tools against registry as well.
+
+        valid_tools = [
+            tool_name
+            for tool_name
+            in plan_result.tools
+            if tool_name
+            in available_tools
+        ]
+
+        valid_tools = list(
+            dict.fromkeys(
+                valid_tools
+            )
         )
 
-        planner_source = "fallback"
+        planner_source = (
+            "fallback"
+        )
 
         planner_error = str(
             exc
         )
 
-    else:
-
-        planner_error = None
+    # ========================================================
+    # TRACE
+    # ========================================================
 
     trace.append({
-        "node": "planner",
+        "node":
+            "planner",
 
-        "status": "success",
+        "status":
+            "success",
 
-        "source": planner_source,
+        "source":
+            planner_source,
 
-        "intent": (
-            plan_result.intent
-        ),
+        "intent":
+            plan_result.intent,
 
-        "plan": valid_tools,
+        "plan":
+            valid_tools,
 
-        "reasoning": (
-            plan_result.reasoning
-        ),
+        "reasoning":
+            plan_result.reasoning,
 
-        "error": planner_error,
+        "error":
+            planner_error,
     })
+
+    # ========================================================
+    # STATE UPDATE
+    # ========================================================
 
     return {
         "intent":
@@ -396,7 +564,6 @@ def planner_node(
 
         "planner_error":
             planner_error,
-
 
         "current_step": (
             valid_tools[0]

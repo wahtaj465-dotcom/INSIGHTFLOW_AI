@@ -4,9 +4,9 @@ from backend.orchestration.planner import (
     AnalyticsPlan,
     _parse_plan,
     _fallback_plan,
+    _build_tool_catalog,
     planner_node,
 )
-
 
 
 def test_parse_structured_plan():
@@ -251,6 +251,114 @@ def test_planner_node_falls_back_when_llm_fails():
         ==
         "fallback"
     )
+
+
+# ============================================================
+# TEST DYNAMIC TOOL CATALOG
+# ============================================================
+
+def test_build_tool_catalog():
+
+    catalog = (
+        _build_tool_catalog()
+    )
+
+    assert isinstance(
+        catalog,
+        str
+    )
+
+    assert "dataset_context" in catalog
+    assert "sql" in catalog
+    assert "visualization" in catalog
+    assert "insight" in catalog
+
+    assert "description" in catalog
+    assert "inputs" in catalog
+    assert "outputs" in catalog
+    assert "dependencies" in catalog
+
+# ============================================================
+# TEST PLANNER USES REGISTRY TOOL CATALOG
+# ============================================================
+
+def test_planner_uses_dynamic_tool_catalog():
+
+    fake_tools = {
+
+        "forecasting": {
+
+            "description":
+                "Forecast future values from historical data.",
+
+            "inputs": {
+                "dataset_id": "dataset_id",
+                "question": "question",
+            },
+
+            "outputs": {
+                "forecast": "forecast_result",
+            },
+
+            "dependencies": [],
+        }
+    }
+
+    fake_llm_response = """
+    {
+        "intent": "forecasting",
+        "tools": ["forecasting"],
+        "reasoning": "Forecast future values."
+    }
+    """
+
+    with patch(
+        "backend.orchestration.planner.get_tool_descriptions",
+        return_value=fake_tools,
+    ), patch(
+        "backend.orchestration.planner.get_available_tools",
+        return_value=["forecasting"],
+    ), patch(
+        "backend.orchestration.planner.LLMService.generate",
+        return_value=fake_llm_response,
+    ) as mock_generate:
+
+        result = planner_node({
+            "dataset_id": "test_dataset",
+            "question": "Forecast next month's sales.",
+            "trace": [],
+        })
+
+    prompt = (
+        mock_generate.call_args.args[0]
+    )
+
+    assert "forecasting" in prompt
+
+    assert (
+        "Forecast future values from historical data."
+        in prompt
+    )
+
+    assert result["plan"] == [
+        "forecasting"
+    ]
+
+    assert (
+        result["current_step"]
+        == "forecasting"
+    )
+
+    assert (
+        result["planner_source"]
+        == "llm"
+    )
+
+    assert (
+        result["planner_error"]
+        is None
+    )
+
 
     # --------------------------------------------------------
     # Verify the LLM was attempted exactly once

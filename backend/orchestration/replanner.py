@@ -1,17 +1,157 @@
 import json
 
-from backend.orchestration.state import (
-    AgentState,
-)
+from backend.orchestration.state import AgentState
 
 from backend.orchestration.planner import (
     _parse_plan,
     _fallback_plan,
 )
 
+from backend.orchestration.tool_registry import (
+    get_available_tools,
+    get_tool_descriptions,
+)
+
 from backend.services.llm_service import (
     LLMService,
 )
+
+
+# ============================================================
+# BUILD DYNAMIC TOOL CATALOG
+# ============================================================
+
+def _build_replanner_tool_catalog() -> str:
+    """
+    Build the tool catalog dynamically from the
+    central tool registry.
+
+    This ensures the replanner automatically knows
+    about newly registered tools.
+    """
+
+    tool_descriptions = (
+        get_tool_descriptions()
+    )
+
+    catalog = []
+
+    for (
+        tool_name,
+        metadata
+    ) in tool_descriptions.items():
+
+        catalog.append({
+            "name":
+                tool_name,
+
+            "description":
+                metadata.get(
+                    "description",
+                    ""
+                ),
+
+            "inputs":
+                metadata.get(
+                    "inputs",
+                    {}
+                ),
+
+            "outputs":
+                metadata.get(
+                    "outputs",
+                    {}
+                ),
+
+            "dependencies":
+                metadata.get(
+                    "dependencies",
+                    []
+                ),
+        })
+
+    return json.dumps(
+        catalog,
+        indent=2
+    )
+
+
+# ============================================================
+# BUILD RECOVERY PROMPT
+# ============================================================
+
+def _build_replanner_prompt(
+    question: str,
+    current_plan: list[str],
+    executed_tools: list[str],
+    failed_tool: str | None,
+    last_tool_error: str | None,
+) -> str:
+    """
+    Build the recovery prompt using the dynamic
+    tool registry.
+    """
+
+    tool_catalog = (
+        _build_replanner_tool_catalog()
+    )
+
+    return f"""
+You are the recovery planner for an autonomous
+data analytics agent.
+
+The agent was executing an analytics workflow
+and one of its tools failed.
+
+USER QUESTION:
+{question}
+
+CURRENT PLAN:
+{json.dumps(current_plan)}
+
+SUCCESSFULLY EXECUTED TOOLS:
+{json.dumps(executed_tools)}
+
+FAILED TOOL:
+{failed_tool}
+
+ERROR:
+{last_tool_error}
+
+AVAILABLE TOOL CATALOG:
+
+{tool_catalog}
+
+Create a revised plan for completing the user's request.
+
+RULES:
+
+1. Return ONLY valid JSON.
+
+2. Do not use markdown.
+
+3. Use only tools from the AVAILABLE TOOL CATALOG.
+
+4. Do not repeat successfully executed tools
+unless they must be executed again because a downstream
+dependency requires new output.
+
+5. You may retry the failed tool if appropriate.
+
+6. Preserve tool dependencies described in the catalog.
+
+7. Keep the recovery plan minimal.
+
+8. Do not answer the user's analytical question yourself.
+
+Return exactly:
+
+{{
+    "intent": "recovery",
+    "tools": ["tool_name"],
+    "reasoning": "brief explanation of the recovery plan"
+}}
+""".strip()
 
 
 # ============================================================
@@ -23,16 +163,6 @@ def replanner_node(
 ) -> dict:
     """
     Create a revised execution plan after a tool failure.
-
-    The re-planner considers:
-
-    - original user question
-    - current execution plan
-    - successfully executed tools
-    - failed tool
-    - failure reason
-
-    It then creates a revised remaining execution plan.
     """
 
     # ========================================================
@@ -73,75 +203,31 @@ def replanner_node(
         )
     )
 
-    current_replan_count = state.get(
-        "replan_count",
-        0
-    )
-
     replan_count = (
-        current_replan_count
+        state.get(
+            "replan_count",
+            0
+        )
         + 1
     )
 
-    # ========================================================
-    # BUILD RECOVERY PROMPT
-    # ========================================================
-
-    prompt = f"""
-You are the recovery planner for an autonomous data analytics agent.
-
-The agent was executing an analytics workflow and one of its tools failed.
-
-USER QUESTION:
-{question}
-
-CURRENT PLAN:
-{json.dumps(current_plan)}
-
-SUCCESSFULLY EXECUTED TOOLS:
-{json.dumps(executed_tools)}
-
-FAILED TOOL:
-{failed_tool}
-
-ERROR:
-{last_tool_error}
-
-AVAILABLE TOOLS:
-
-- dataset_context
-- sql
-- visualization
-- insight
-
-Create a revised plan for completing the user's request.
-
-RULES:
-
-1. Return ONLY valid JSON.
-2. Do not use markdown.
-3. Use only the available tools.
-4. Do not repeat successfully executed tools unless absolutely necessary.
-5. You may retry the failed tool if retrying it is appropriate.
-6. Preserve logical tool dependencies.
-7. Visualization may depend on SQL results.
-8. Insight generation may depend on SQL results.
-9. Keep the revised plan as small as possible while still completing the request.
-
-Return exactly this JSON structure:
-
-{{
-    "intent": "recovery",
-    "tools": ["tool_name"],
-    "reasoning": "brief explanation of the recovery plan"
-}}
-"""
+    available_tools = set(
+        get_available_tools()
+    )
 
     # ========================================================
-    # TRY LLM RE-PLANNING
+    # TRY LLM REPLANNING
     # ========================================================
 
     try:
+
+        prompt = _build_replanner_prompt(
+            question=question,
+            current_plan=current_plan,
+            executed_tools=executed_tools,
+            failed_tool=failed_tool,
+            last_tool_error=last_tool_error,
+        )
 
         llm_service = (
             LLMService()
@@ -160,18 +246,30 @@ Return exactly this JSON structure:
         )
 
         # ----------------------------------------------------
-        # Remove tools that already completed successfully
+        # Validate against registry
         # ----------------------------------------------------
 
         remaining_tools = [
             tool_name
-
-            for tool_name
-            in revised_plan.tools
-
-            if tool_name
-            not in executed_tools
+            for tool_name in revised_plan.tools
+            if (
+                tool_name in available_tools
+                and
+                tool_name not in executed_tools
+            )
         ]
+
+        remaining_tools = list(
+            dict.fromkeys(
+                remaining_tools
+            )
+        )
+
+        if not remaining_tools:
+
+            raise ValueError(
+                "Replanner returned no valid recovery tools."
+            )
 
         planner_source = (
             "llm"
@@ -182,7 +280,7 @@ Return exactly this JSON structure:
         )
 
     # ========================================================
-    # FALLBACK IF LLM IS UNAVAILABLE
+    # FALLBACK
     # ========================================================
 
     except Exception as exc:
@@ -195,13 +293,19 @@ Return exactly this JSON structure:
 
         remaining_tools = [
             tool_name
-
-            for tool_name
-            in fallback_plan.tools
-
-            if tool_name
-            not in executed_tools
+            for tool_name in fallback_plan.tools
+            if (
+                tool_name in available_tools
+                and
+                tool_name not in executed_tools
+            )
         ]
+
+        remaining_tools = list(
+            dict.fromkeys(
+                remaining_tools
+            )
+        )
 
         planner_source = (
             "fallback"
@@ -209,18 +313,17 @@ Return exactly this JSON structure:
 
         reasoning = (
             "LLM re-planning failed. "
-            "Fallback recovery plan used. "
-            f"Reason: {exc}"
+            f"Fallback recovery plan used: {exc}"
         )
 
     # ========================================================
-    # ENSURE RECOVERY HAS SOMETHING TO EXECUTE
+    # ENSURE FAILED TOOL CAN BE RETRIED
     # ========================================================
 
     if (
         not remaining_tools
-        and
-        failed_tool
+        and failed_tool
+        and failed_tool in available_tools
     ):
 
         remaining_tools = [
@@ -228,25 +331,12 @@ Return exactly this JSON structure:
         ]
 
     # ========================================================
-    # DETERMINE NEXT STEP
-    # ========================================================
-
-    next_step = (
-        remaining_tools[0]
-        if remaining_tools
-        else None
-    )
-
-    # ========================================================
-    # TRACE RE-PLANNING
+    # TRACE
     # ========================================================
 
     trace.append({
         "node":
             "replanner",
-
-        "status":
-            "success",
 
         "source":
             planner_source,
@@ -254,29 +344,18 @@ Return exactly this JSON structure:
         "failed_tool":
             failed_tool,
 
-        "previous_plan":
-            current_plan,
-
         "revised_plan":
             remaining_tools,
 
         "replan_count":
             replan_count,
-
-        "reasoning":
-            reasoning,
     })
 
     # ========================================================
-    # RETURN STATE UPDATE
+    # RETURN UPDATE
     # ========================================================
 
     return {
-
-        # ----------------------------------------------------
-        # Revised plan
-        # ----------------------------------------------------
-
         "plan":
             remaining_tools,
 
@@ -286,16 +365,11 @@ Return exactly this JSON structure:
         "planner_source":
             planner_source,
 
-        # ----------------------------------------------------
-        # Next execution step
-        # ----------------------------------------------------
-
-        "current_step":
-            next_step,
-
-        # ----------------------------------------------------
-        # Recovery counters
-        # ----------------------------------------------------
+        "current_step": (
+            remaining_tools[0]
+            if remaining_tools
+            else None
+        ),
 
         "replan_count":
             replan_count,
@@ -303,29 +377,8 @@ Return exactly this JSON structure:
         "retry_count":
             0,
 
-        # ----------------------------------------------------
-        # Clear previous failure state
-        # ----------------------------------------------------
-
-        "failed_tool":
-            None,
-
-        "last_tool_error":
-            None,
-
         "error":
             None,
-
-        # ----------------------------------------------------
-        # Workflow continues
-        # ----------------------------------------------------
-
-        "completed":
-            False,
-
-        # ----------------------------------------------------
-        # Observability
-        # ----------------------------------------------------
 
         "trace":
             trace,

@@ -2,6 +2,8 @@ from unittest.mock import patch
 
 from backend.orchestration.replanner import (
     replanner_node,
+    _build_replanner_tool_catalog,
+
 )
 
 
@@ -224,4 +226,177 @@ def test_replanner_falls_back_when_llm_fails():
     assert (
         result["trace"][-1]["node"]
         == "replanner"
+    )
+
+# ============================================================
+# TEST 4
+# Replanner tool catalog comes from registry
+# ============================================================
+
+def test_build_replanner_tool_catalog():
+
+    fake_tools = {
+
+        "forecasting": {
+
+            "description":
+                "Forecast future values from historical data.",
+
+            "inputs": {
+                "dataset_id": "dataset_id",
+                "question": "question",
+            },
+
+            "outputs": {
+                "forecast": "forecast_result",
+            },
+
+            "dependencies": [],
+        }
+    }
+
+    with patch(
+        "backend.orchestration.replanner.get_tool_descriptions",
+        return_value=fake_tools,
+    ):
+
+        catalog = (
+            _build_replanner_tool_catalog()
+        )
+
+    assert "forecasting" in catalog
+
+    assert (
+        "Forecast future values from historical data."
+        in catalog
+    )
+
+    assert "dataset_id" in catalog
+
+    assert "forecast_result" in catalog
+
+
+# ============================================================
+# TEST 5
+# Replanner can discover a newly registered tool
+# ============================================================
+
+def test_replanner_uses_dynamic_tool_catalog():
+
+    fake_tools = {
+
+        "forecasting": {
+
+            "description":
+                "Forecast future values from historical data.",
+
+            "inputs": {
+                "dataset_id": "dataset_id",
+                "question": "question",
+            },
+
+            "outputs": {
+                "forecast": "forecast_result",
+            },
+
+            "dependencies": [],
+        }
+    }
+
+    fake_llm_response = """
+    {
+        "intent": "recovery",
+        "tools": ["forecasting"],
+        "reasoning": "Use forecasting to recover and complete the request."
+    }
+    """
+
+    state = {
+
+        "dataset_id":
+            "test_dataset",
+
+        "question":
+            "Forecast next month's sales.",
+
+        "plan": [
+            "sql"
+        ],
+
+        "executed_tools": [],
+
+        "current_step":
+            "sql",
+
+        "failed_tool":
+            "sql",
+
+        "last_tool_error":
+            "SQL analysis failed.",
+
+        "replan_count":
+            0,
+
+        "max_replans":
+            2,
+
+        "trace": [],
+    }
+
+    with patch(
+        "backend.orchestration.replanner.get_tool_descriptions",
+        return_value=fake_tools,
+    ), patch(
+        "backend.orchestration.replanner.get_available_tools",
+        return_value=["forecasting"],
+    ), patch(
+        "backend.orchestration.replanner.LLMService.generate",
+        return_value=fake_llm_response,
+    ) as mock_generate:
+
+        result = replanner_node(
+            state
+        )
+
+    prompt = (
+        mock_generate.call_args.args[0]
+    )
+
+    # The registry metadata must appear in the LLM prompt.
+    assert "forecasting" in prompt
+
+    assert (
+        "Forecast future values from historical data."
+        in prompt
+    )
+
+    # The LLM-selected registered tool must become
+    # the new recovery plan.
+    assert result["plan"] == [
+        "forecasting"
+    ]
+
+    assert (
+        result["current_step"]
+        == "forecasting"
+    )
+
+    assert (
+        result["planner_source"]
+        == "llm"
+    )
+
+    assert (
+        result["replan_count"]
+        == 1
+    )
+
+    assert (
+        result["trace"][-1]["node"]
+        == "replanner"
+    )
+
+    assert (
+        result["trace"][-1]["revised_plan"]
+        == ["forecasting"]
     )

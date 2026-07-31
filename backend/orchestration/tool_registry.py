@@ -21,15 +21,19 @@ from backend.orchestration.tools.insight_tools import (
 
 TOOL_REGISTRY = {
 
+    # --------------------------------------------------------
+    # DATASET CONTEXT
+    # --------------------------------------------------------
+
     "dataset_context": {
 
         "tool":
             get_dataset_context,
 
         "description": (
-            "Inspect the uploaded dataset and return "
-            "information about its structure, columns, "
-            "data types, shape, and dataset context."
+            "Inspect the uploaded dataset and return useful "
+            "context such as columns, schema, data types, "
+            "shape, and dataset metadata."
         ),
 
         "inputs": {
@@ -38,8 +42,14 @@ TOOL_REGISTRY = {
         },
 
         "outputs": {},
+
+        "dependencies": [],
     },
 
+
+    # --------------------------------------------------------
+    # SQL ANALYSIS
+    # --------------------------------------------------------
 
     "sql": {
 
@@ -47,8 +57,11 @@ TOOL_REGISTRY = {
             run_sql_analysis,
 
         "description": (
-            "Generate and execute SQL for analytical "
-            "questions about the uploaded dataset."
+            "Generate and execute SQL-style analytical queries "
+            "against the uploaded dataset. Use this for "
+            "filtering, aggregation, grouping, ranking, "
+            "comparisons, totals, averages, and analytical "
+            "data retrieval."
         ),
 
         "inputs": {
@@ -66,8 +79,14 @@ TOOL_REGISTRY = {
             "result":
                 "sql_result",
         },
+
+        "dependencies": [],
     },
 
+
+    # --------------------------------------------------------
+    # VISUALIZATION
+    # --------------------------------------------------------
 
     "visualization": {
 
@@ -75,8 +94,10 @@ TOOL_REGISTRY = {
             generate_visualization,
 
         "description": (
-            "Generate an appropriate visualization "
-            "for the user's analytical question."
+            "Generate an appropriate visualization for the "
+            "user's analytical request, such as bar charts, "
+            "scatter plots, line charts, histograms, box "
+            "plots, heatmaps, or other supported charts."
         ),
 
         "inputs": {
@@ -94,8 +115,14 @@ TOOL_REGISTRY = {
             "chart":
                 "visualization",
         },
+
+        "dependencies": [],
     },
 
+
+    # --------------------------------------------------------
+    # ANALYTICAL INSIGHT
+    # --------------------------------------------------------
 
     "insight": {
 
@@ -103,9 +130,10 @@ TOOL_REGISTRY = {
             generate_analytical_insight,
 
         "description": (
-            "Generate a natural-language analytical "
-            "insight from the dataset and previous "
-            "analysis results."
+            "Interpret analytical results and generate a "
+            "natural-language explanation of important "
+            "patterns, relationships, findings, and business "
+            "insights."
         ),
 
         "inputs": {
@@ -126,8 +154,35 @@ TOOL_REGISTRY = {
             "insight":
                 "insight",
         },
+
+        "dependencies": [],
     },
 }
+
+
+# ============================================================
+# GET TOOL
+# ============================================================
+
+def get_tool(
+    tool_name: str
+):
+    """
+    Return the executable LangChain tool.
+
+    Kept for compatibility with existing code.
+    """
+
+    definition = TOOL_REGISTRY.get(
+        tool_name
+    )
+
+    if definition is None:
+        return None
+
+    return definition.get(
+        "tool"
+    )
 
 
 # ============================================================
@@ -148,38 +203,13 @@ def get_tool_definition(
 
 
 # ============================================================
-# GET TOOL
-# ============================================================
-
-def get_tool(
-    tool_name: str
-):
-    """
-    Return the executable LangChain tool.
-    """
-
-    definition = (
-        get_tool_definition(
-            tool_name
-        )
-    )
-
-    if definition is None:
-        return None
-
-    return definition[
-        "tool"
-    ]
-
-
-# ============================================================
-# GET AVAILABLE TOOLS
+# GET AVAILABLE TOOL NAMES
 # ============================================================
 
 def get_available_tools():
     """
-    Return the names of all tools available
-    to the orchestrator.
+    Return names of all tools available
+    to the agent.
     """
 
     return list(
@@ -188,38 +218,49 @@ def get_available_tools():
 
 
 # ============================================================
-# GET TOOL CATALOG
+# GET TOOL DESCRIPTIONS
 # ============================================================
 
-def get_tool_catalog():
+def get_tool_descriptions():
     """
-    Return tool descriptions for planning.
+    Return tool descriptions for planner/replanner use.
 
-    Executable tool objects are intentionally
-    excluded from the catalog.
+    The executable tool objects are intentionally excluded.
     """
 
-    catalog = {}
+    descriptions = {}
 
     for (
         tool_name,
         definition
     ) in TOOL_REGISTRY.items():
 
-        catalog[
+        descriptions[
             tool_name
         ] = {
             "description":
-                definition[
-                    "description"
-                ],
+                definition.get(
+                    "description",
+                    ""
+                ),
 
             "inputs":
-                list(
-                    definition[
-                        "inputs"
-                    ].keys()
+                definition.get(
+                    "inputs",
+                    {}
+                ),
+
+            "outputs":
+                definition.get(
+                    "outputs",
+                    {}
+                ),
+
+            "dependencies":
+                definition.get(
+                    "dependencies",
+                    []
                 ),
         }
 
-    return catalog
+    return descriptions

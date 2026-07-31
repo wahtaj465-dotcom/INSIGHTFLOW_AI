@@ -1,105 +1,29 @@
-from backend.orchestration.state import (
-    AgentState,
-)
+from backend.orchestration.state import AgentState
 
 from backend.orchestration.tool_registry import (
     get_tool_definition,
 )
 
+from backend.orchestration.input_resolver import (
+    build_tool_input,
+)
 
-# ============================================================
-# BUILD TOOL INPUT
-# ============================================================
-
-def build_tool_input(
-    state: AgentState,
-    input_mapping: dict,
-) -> dict:
-    """
-    Build tool arguments dynamically from AgentState.
-
-    Example:
-
-        {
-            "dataset_id": "dataset_id",
-            "sql_result": "sql_result",
-        }
-
-    means:
-
-        tool_input["dataset_id"] =
-            state["dataset_id"]
-
-        tool_input["sql_result"] =
-            state["sql_result"]
-    """
-
-    tool_input = {}
-
-    for (
-        tool_argument,
-        state_field
-    ) in input_mapping.items():
-
-        tool_input[
-            tool_argument
-        ] = state.get(
-            state_field
-        )
-
-    return tool_input
-
-
-# ============================================================
-# PROMOTE TOOL OUTPUTS
-# ============================================================
-
-def promote_tool_outputs(
-    result: dict,
-    output_mapping: dict,
-) -> dict:
-    """
-    Map important tool outputs back into AgentState.
-
-    Example:
-
-        {
-            "generated_sql": "generated_sql",
-            "result": "sql_result",
-        }
-    """
-
-    updates = {}
-
-    for (
-        result_field,
-        state_field
-    ) in output_mapping.items():
-
-        updates[
-            state_field
-        ] = result.get(
-            result_field
-        )
-
-    return updates
-
-
-# ============================================================
-# TOOL EXECUTOR NODE
-# ============================================================
 
 def tool_executor_node(
     state: AgentState
 ) -> dict:
     """
-    Dynamically execute the tool selected by the agent.
+    Execute the current tool dynamically using
+    metadata from the central tool registry.
 
-    The executor itself does not contain
-    tool-specific SQL/visualization/insight logic.
-
-    Tool behavior is defined through the
-    central tool registry.
+    Responsibilities:
+    - find the current tool
+    - retrieve its registry definition
+    - build inputs dynamically
+    - execute the tool
+    - store the raw tool result
+    - promote declared outputs into AgentState
+    - record success/failure information
     """
 
     # ========================================================
@@ -127,71 +51,54 @@ def tool_executor_node(
         )
     )
 
-    tool_name = state.get(
+    current_step = state.get(
         "current_step"
     )
 
     # ========================================================
-    # NO TOOL SELECTED
+    # NO CURRENT TOOL
     # ========================================================
 
-    if not tool_name:
+    if not current_step:
 
         trace.append({
-            "node":
-                "tool_executor",
-
-            "status":
-                "skipped",
-
-            "reason":
-                "No current tool step exists.",
+            "node": "tool_executor",
+            "status": "skipped",
+            "reason": "No current tool step exists.",
         })
 
         return {
-            "current_step":
-                None,
-
-            "trace":
-                trace,
+            "current_step": None,
+            "trace": trace,
         }
 
     # ========================================================
     # GET TOOL DEFINITION
     # ========================================================
 
-    definition = (
-        get_tool_definition(
-            tool_name
-        )
+    definition = get_tool_definition(
+        current_step
     )
 
     if definition is None:
 
         error = (
-            f"Unknown tool: {tool_name}"
+            f"Unknown tool: {current_step}"
         )
 
         trace.append({
-            "node":
-                "tool_executor",
-
-            "tool":
-                tool_name,
-
-            "status":
-                "error",
-
-            "error":
-                error,
+            "node": "tool_executor",
+            "tool": current_step,
+            "status": "error",
+            "error": error,
         })
 
         return {
             "current_step":
-                tool_name,
+                current_step,
 
             "failed_tool":
-                tool_name,
+                current_step,
 
             "last_tool_error":
                 error,
@@ -204,30 +111,56 @@ def tool_executor_node(
         }
 
     # ========================================================
-    # GET TOOL + METADATA
+    # GET EXECUTABLE TOOL
     # ========================================================
 
-    tool = definition[
+    tool = definition.get(
         "tool"
-    ]
+    )
+
+    if tool is None:
+
+        error = (
+            f"Tool '{current_step}' has no executable "
+            "tool registered."
+        )
+
+        trace.append({
+            "node": "tool_executor",
+            "tool": current_step,
+            "status": "error",
+            "error": error,
+        })
+
+        return {
+            "current_step":
+                current_step,
+
+            "failed_tool":
+                current_step,
+
+            "last_tool_error":
+                error,
+
+            "error":
+                error,
+
+            "trace":
+                trace,
+        }
+
+    # ========================================================
+    # BUILD INPUT DYNAMICALLY
+    # ========================================================
 
     input_mapping = definition.get(
         "inputs",
         {}
     )
 
-    output_mapping = definition.get(
-        "outputs",
-        {}
-    )
-
-    # ========================================================
-    # BUILD TOOL INPUT DYNAMICALLY
-    # ========================================================
-
     tool_input = build_tool_input(
-        state,
         input_mapping,
+        state,
     )
 
     # ========================================================
@@ -240,24 +173,25 @@ def tool_executor_node(
             tool_input
         )
 
-        if not isinstance(
-            result,
-            dict
-        ):
-
-            result = {
-                "success": True,
-                "result": result,
-            }
-
     except Exception as exc:
 
         result = {
-            "success":
-                False,
+            "success": False,
+            "error": str(exc),
+        }
 
-            "error":
-                str(exc),
+    # ========================================================
+    # NORMALIZE RESULT
+    # ========================================================
+
+    if not isinstance(
+        result,
+        dict
+    ):
+
+        result = {
+            "success": True,
+            "result": result,
         }
 
     # ========================================================
@@ -265,12 +199,8 @@ def tool_executor_node(
     # ========================================================
 
     tool_results[
-        tool_name
+        current_step
     ] = result
-
-    # ========================================================
-    # SUCCESSFUL EXECUTION
-    # ========================================================
 
     success = (
         result.get(
@@ -279,16 +209,97 @@ def tool_executor_node(
         is True
     )
 
+    # ========================================================
+    # MARK SUCCESSFUL EXECUTION
+    # ========================================================
+
     if success:
 
         if (
-            tool_name
+            current_step
             not in executed_tools
         ):
 
             executed_tools.append(
-                tool_name
+                current_step
             )
+
+    # ========================================================
+    # BASE STATE UPDATE
+    # ========================================================
+
+    updates = {
+        "current_step":
+            current_step,
+
+        "executed_tools":
+            executed_tools,
+
+        "tool_results":
+            tool_results,
+    }
+
+    # ========================================================
+    # PROMOTE OUTPUTS DYNAMICALLY
+    # ========================================================
+
+    if success:
+
+        output_mapping = definition.get(
+            "outputs",
+            {}
+        )
+
+        for (
+            result_key,
+            state_key
+        ) in output_mapping.items():
+
+            updates[
+                state_key
+            ] = result.get(
+                result_key
+            )
+
+    # ========================================================
+    # HANDLE SUCCESS / FAILURE
+    # ========================================================
+
+    if success:
+
+        updates[
+            "failed_tool"
+        ] = None
+
+        updates[
+            "last_tool_error"
+        ] = None
+
+        updates[
+            "error"
+        ] = None
+
+    else:
+
+        error = (
+            result.get(
+                "error"
+            )
+            or
+            f"{current_step} failed."
+        )
+
+        updates[
+            "failed_tool"
+        ] = current_step
+
+        updates[
+            "last_tool_error"
+        ] = error
+
+        updates[
+            "error"
+        ] = error
 
     # ========================================================
     # TRACE
@@ -299,7 +310,7 @@ def tool_executor_node(
             "tool_executor",
 
         "tool":
-            tool_name,
+            current_step,
 
         "status": (
             "success"
@@ -307,87 +318,22 @@ def tool_executor_node(
             else "error"
         ),
 
-        "error":
-            result.get(
-                "error"
+        "input_keys":
+            list(
+                tool_input.keys()
             ),
+
+        "error": (
+            None
+            if success
+            else updates.get(
+                "last_tool_error"
+            )
+        ),
     })
 
-    # ========================================================
-    # BASE STATE UPDATES
-    # ========================================================
-
-    updates = {
-        "current_step":
-            tool_name,
-
-        "executed_tools":
-            executed_tools,
-
-        "tool_results":
-            tool_results,
-
-        "trace":
-            trace,
-    }
-
-    # ========================================================
-    # PROMOTE OUTPUTS DYNAMICALLY
-    # ========================================================
-
-    promoted_outputs = (
-        promote_tool_outputs(
-            result,
-            output_mapping,
-        )
-    )
-
-    updates.update(
-        promoted_outputs
-    )
-
-    # ========================================================
-    # FAILURE STATE
-    # ========================================================
-
-    if not success:
-
-        error = (
-            result.get(
-                "error"
-            )
-            or
-            f"{tool_name} failed."
-        )
-
-        updates[
-            "failed_tool"
-        ] = tool_name
-
-        updates[
-            "last_tool_error"
-        ] = error
-
-        updates[
-            "error"
-        ] = error
-
-    # ========================================================
-    # CLEAR PREVIOUS FAILURE AFTER SUCCESS
-    # ========================================================
-
-    else:
-
-        updates[
-            "failed_tool"
-        ] = None
-
-        updates[
-            "last_tool_error"
-        ] = None
-
-        updates[
-            "error"
-        ] = None
+    updates[
+        "trace"
+    ] = trace
 
     return updates
