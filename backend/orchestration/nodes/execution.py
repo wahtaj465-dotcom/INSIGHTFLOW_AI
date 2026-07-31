@@ -27,13 +27,16 @@ def tool_executor_node(
     from the central tool registry.
 
     Responsibilities:
+
     - identify the current tool
     - retrieve its registry definition
     - validate dependencies
-    - build tool inputs dynamically
+    - build inputs dynamically
     - execute the tool
     - store raw tool results
-    - promote declared outputs into AgentState
+    - promote registry-declared outputs
+    - store dynamic outputs inside tool_outputs
+    - preserve backward-compatible top-level outputs
     - record success/failure information
     """
 
@@ -51,6 +54,13 @@ def tool_executor_node(
     tool_results = dict(
         state.get(
             "tool_results",
+            {}
+        )
+    )
+
+    tool_outputs = dict(
+        state.get(
+            "tool_outputs",
             {}
         )
     )
@@ -86,6 +96,9 @@ def tool_executor_node(
         return {
             "current_step":
                 None,
+
+            "tool_outputs":
+                tool_outputs,
 
             "trace":
                 trace,
@@ -123,6 +136,15 @@ def tool_executor_node(
             "current_step":
                 current_step,
 
+            "executed_tools":
+                executed_tools,
+
+            "tool_results":
+                tool_results,
+
+            "tool_outputs":
+                tool_outputs,
+
             "failed_tool":
                 current_step,
 
@@ -153,9 +175,8 @@ def tool_executor_node(
             False,
         )
     )
-    
-    if not dependencies_ready:
 
+    if not dependencies_ready:
 
         missing_dependencies = (
             dependency_status.get(
@@ -171,12 +192,14 @@ def tool_executor_node(
             )
         )
 
-        reason = dependency_status.get(
-            "reason"
+        reason = (
+            dependency_status.get(
+                "reason"
+            )
         )
 
         # ----------------------------------------------------
-        # Build fallback reason if resolver did not provide one
+        # Build fallback reason
         # ----------------------------------------------------
 
         if not reason:
@@ -205,8 +228,7 @@ def tool_executor_node(
                 )
 
         # ----------------------------------------------------
-        # IMPORTANT:
-        # Record blocked execution as failed tool result
+        # Record blocked execution
         # ----------------------------------------------------
 
         blocked_result = {
@@ -255,7 +277,7 @@ def tool_executor_node(
         })
 
         # ----------------------------------------------------
-        # Return failure state
+        # Return blocked state
         # ----------------------------------------------------
 
         return {
@@ -267,6 +289,9 @@ def tool_executor_node(
 
             "tool_results":
                 tool_results,
+
+            "tool_outputs":
+                tool_outputs,
 
             "failed_tool":
                 current_step,
@@ -280,8 +305,6 @@ def tool_executor_node(
             "trace":
                 trace,
         }
-
-
 
     # ========================================================
     # 5. GET EXECUTABLE TOOL
@@ -315,6 +338,15 @@ def tool_executor_node(
         return {
             "current_step":
                 current_step,
+
+            "executed_tools":
+                executed_tools,
+
+            "tool_results":
+                tool_results,
+
+            "tool_outputs":
+                tool_outputs,
 
             "failed_tool":
                 current_step,
@@ -423,6 +455,9 @@ def tool_executor_node(
 
         "tool_results":
             tool_results,
+
+        "tool_outputs":
+            tool_outputs,
     }
 
     # ========================================================
@@ -441,11 +476,43 @@ def tool_executor_node(
             state_key
         ) in output_mapping.items():
 
-            updates[
-                state_key
-            ] = result.get(
+            value = result.get(
                 result_key
             )
+
+            # ------------------------------------------------
+            # Generic dynamic output storage
+            # ------------------------------------------------
+
+            tool_outputs[
+                state_key
+            ] = value
+
+            # ------------------------------------------------
+            # Backward-compatible state promotion
+            # ------------------------------------------------
+            #
+            # Existing fields such as:
+            #
+            # generated_sql
+            # sql_result
+            # visualization
+            # insight
+            #
+            # continue to work exactly as before.
+            #
+            # Future fields may not survive LangGraph's
+            # TypedDict schema as top-level keys, but they
+            # always survive inside tool_outputs.
+            # ------------------------------------------------
+
+            updates[
+                state_key
+            ] = value
+
+        updates[
+            "tool_outputs"
+        ] = tool_outputs
 
     # ========================================================
     # 13. SUCCESS / FAILURE STATE
@@ -508,6 +575,17 @@ def tool_executor_node(
             list(
                 tool_input.keys()
             ),
+
+        "output_keys": (
+            list(
+                definition.get(
+                    "outputs",
+                    {}
+                ).values()
+            )
+            if success
+            else []
+        ),
 
         "error": (
             None

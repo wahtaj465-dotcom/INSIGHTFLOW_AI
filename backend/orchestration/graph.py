@@ -35,6 +35,8 @@ def initialize_node(
 ) -> dict:
     """
     Initialize runtime fields before planning begins.
+
+    Dynamic tool outputs are stored inside tool_outputs.
     """
 
     trace = list(
@@ -45,95 +47,128 @@ def initialize_node(
     )
 
     trace.append({
-        "node": "initialize",
-        "status": "success",
+        "node":
+            "initialize",
+
+        "status":
+            "success",
     })
 
     return {
 
-        # ----------------------------------------------------
-        # Planning
-        # ----------------------------------------------------
+        # ====================================================
+        # PLANNING
+        # ====================================================
 
-        "intent": None,
+        "intent":
+            None,
 
-        "plan": [],
+        "plan":
+            [],
 
-        "plan_reasoning": None,
+        "plan_reasoning":
+            None,
 
-        "planner_source": None,
+        "planner_source":
+            None,
 
-        "planner_error": None,
+        "planner_error":
+            None,
 
-        # ----------------------------------------------------
-        # Execution
-        # ----------------------------------------------------
+        # ====================================================
+        # EXECUTION
+        # ====================================================
 
-        "current_step": None,
+        "current_step":
+            None,
 
-        "executed_tools": [],
+        "executed_tools":
+            [],
 
-        "tool_results": {},
-
-        # ----------------------------------------------------
-        # Analytics outputs
-        # ----------------------------------------------------
-
-        "generated_sql": None,
-
-        "sql_result": None,
-
-        "visualization": None,
-
-        "statistical_findings": [],
-
-        "insight": None,
+        "tool_results":
+            {},
 
         # ----------------------------------------------------
-        # Retry control
+        # Dynamic registry-defined outputs
         # ----------------------------------------------------
 
-        "retry_count": 0,
+        "tool_outputs":
+            {},
 
-        "max_retries": state.get(
-            "max_retries",
-            2
-        ),
+        # ====================================================
+        # ANALYTICS OUTPUTS
+        # ====================================================
 
-        # ----------------------------------------------------
-        # Re-planning / recovery control
-        # ----------------------------------------------------
+        "generated_sql":
+            None,
 
-        "replan_count": 0,
+        "sql_result":
+            None,
 
-        "max_replans": state.get(
-            "max_replans",
-            2
-        ),
+        "visualization":
+            None,
 
-        "failed_tool": None,
+        "statistical_findings":
+            [],
 
-        "last_tool_error": None,
+        "insight":
+            None,
 
-        # ----------------------------------------------------
-        # Workflow state
-        # ----------------------------------------------------
+        # ====================================================
+        # RETRY CONTROL
+        # ====================================================
 
-        "error": None,
+        "retry_count":
+            0,
 
-        "completed": False,
+        "max_retries":
+            state.get(
+                "max_retries",
+                2
+            ),
 
-        # ----------------------------------------------------
-        # Final response
-        # ----------------------------------------------------
+        # ====================================================
+        # REPLANNING / RECOVERY CONTROL
+        # ====================================================
 
-        "final_response": None,
+        "replan_count":
+            0,
 
-        # ----------------------------------------------------
-        # Observability
-        # ----------------------------------------------------
+        "max_replans":
+            state.get(
+                "max_replans",
+                2
+            ),
 
-        "trace": trace,
+        "failed_tool":
+            None,
+
+        "last_tool_error":
+            None,
+
+        # ====================================================
+        # WORKFLOW STATE
+        # ====================================================
+
+        "error":
+            None,
+
+        "completed":
+            False,
+
+        # ====================================================
+        # FINAL RESPONSE
+        # ====================================================
+
+        "final_response":
+            None,
+
+        # ====================================================
+        # OBSERVABILITY
+        # ====================================================
+
+        "trace":
+            trace,
     }
 
 
@@ -156,23 +191,28 @@ def finish_node(
     )
 
     trace.append({
-        "node": "finish",
+        "node":
+            "finish",
 
         "status": (
             "error"
-            if state.get("error")
+            if state.get(
+                "error"
+            )
             else "success"
         ),
     })
 
     final_response = {
 
-        # ----------------------------------------------------
-        # Status
-        # ----------------------------------------------------
+        # ====================================================
+        # STATUS
+        # ====================================================
 
         "success": (
-            state.get("error")
+            state.get(
+                "error"
+            )
             is None
         ),
 
@@ -181,9 +221,9 @@ def finish_node(
                 "error"
             ),
 
-        # ----------------------------------------------------
-        # Request
-        # ----------------------------------------------------
+        # ====================================================
+        # REQUEST
+        # ====================================================
 
         "dataset_id":
             state.get(
@@ -195,9 +235,9 @@ def finish_node(
                 "question"
             ),
 
-        # ----------------------------------------------------
-        # Planning
-        # ----------------------------------------------------
+        # ====================================================
+        # PLANNING
+        # ====================================================
 
         "intent":
             state.get(
@@ -225,9 +265,9 @@ def finish_node(
                 "planner_error"
             ),
 
-        # ----------------------------------------------------
-        # Tool execution
-        # ----------------------------------------------------
+        # ====================================================
+        # TOOL EXECUTION
+        # ====================================================
 
         "executed_tools":
             state.get(
@@ -235,9 +275,25 @@ def finish_node(
                 []
             ),
 
+        "tool_results":
+            state.get(
+                "tool_results",
+                {}
+            ),
+
         # ----------------------------------------------------
-        # Analytics outputs
+        # Generic outputs from all registry-defined tools
         # ----------------------------------------------------
+
+        "tool_outputs":
+            state.get(
+                "tool_outputs",
+                {}
+            ),
+
+        # ====================================================
+        # EXISTING ANALYTICS OUTPUTS
+        # ====================================================
 
         "generated_sql":
             state.get(
@@ -265,9 +321,9 @@ def finish_node(
                 "insight"
             ),
 
-        # ----------------------------------------------------
-        # Retry information
-        # ----------------------------------------------------
+        # ====================================================
+        # RETRY INFORMATION
+        # ====================================================
 
         "retry_count":
             state.get(
@@ -281,9 +337,9 @@ def finish_node(
                 2
             ),
 
-        # ----------------------------------------------------
-        # Re-planning information
-        # ----------------------------------------------------
+        # ====================================================
+        # REPLANNING INFORMATION
+        # ====================================================
 
         "replan_count":
             state.get(
@@ -309,7 +365,8 @@ def finish_node(
     }
 
     return {
-        "completed": True,
+        "completed":
+            True,
 
         "final_response":
             final_response,
@@ -342,8 +399,8 @@ def build_agent_graph():
           |
           v
        observer
-        /  |   \
-       /   |    \
+        /  |   \\
+       /   |    \\
  execute replan finish
     |       |      |
     |       v      v
@@ -447,7 +504,7 @@ def build_agent_graph():
     )
 
     # ========================================================
-    # RE-PLANNING LOOP
+    # REPLANNING LOOP
     # ========================================================
 
     workflow.add_edge(
@@ -471,4 +528,6 @@ def build_agent_graph():
 # COMPILED AGENT
 # ============================================================
 
-agent_graph = build_agent_graph()
+agent_graph = (
+    build_agent_graph()
+)
