@@ -2,8 +2,11 @@ from backend.orchestration.state import (
     AgentState,
 )
 
-from backend.orchestration.step_resolver import (
-    resolve_next_step,
+from backend.orchestration.execution_policy import (
+    EXECUTE,
+    REPLAN,
+    FINISH,
+    evaluate_execution_policy,
 )
 
 
@@ -15,23 +18,28 @@ def observer_node(
     state: AgentState
 ) -> dict:
     """
-    Observe the latest tool execution and decide
-    what the agent should do next.
+    Observe the current agent state and delegate the
+    next-action decision to the centralized execution policy.
 
     Responsibilities:
-    - inspect the latest tool result
-    - detect execution failure
-    - trigger replanning when recovery is required
-    - use the step resolver to find the next
-      executable tool
-    - detect blocked/invalid plans
-    - detect workflow completion
 
-    The observer does NOT execute tools.
+    - inspect the latest execution state
+    - defensively detect a failed current tool
+    - call the execution policy
+    - translate the policy decision into state updates
+    - record the decision in the trace
+
+    The observer does NOT:
+
+    - execute tools
+    - resolve dependencies directly
+    - select tools directly
+    - perform replanning
+    - modify the execution plan
     """
 
     # ========================================================
-    # READ STATE
+    # 1. READ STATE
     # ========================================================
 
     trace = list(
@@ -41,18 +49,16 @@ def observer_node(
         )
     )
 
-    plan = list(
-        state.get(
-            "plan",
-            []
-        )
+    current_step = state.get(
+        "current_step"
     )
 
-    executed_tools = list(
-        state.get(
-            "executed_tools",
-            []
-        )
+    failed_tool = state.get(
+        "failed_tool"
+    )
+
+    last_tool_error = state.get(
+        "last_tool_error"
     )
 
     tool_results = dict(
@@ -62,307 +68,133 @@ def observer_node(
         )
     )
 
-    current_step = state.get(
+    # ========================================================
+    # 2. DEFENSIVE FAILURE DETECTION
+    # ========================================================
+    #
+    # execution.py normally sets failed_tool and
+    # last_tool_error.
+    #
+    # However, observer_node may also be invoked directly
+    # in tests or by another caller.
+    #
+    # If the current tool result explicitly says
+    # success=False, normalize that failure before policy
+    # evaluation.
+    #
+    # IMPORTANT:
+    # Do NOT create a modified state for normal successful
+    # execution. This preserves the policy integration
+    # contract:
+    #
+    # evaluate_execution_policy(state)
+    # ========================================================
+
+    detected_failure = False
+
+    if (
+        current_step
+        and
+        not failed_tool
+    ):
+
+        current_result = tool_results.get(
+            current_step
+        )
+
+        if isinstance(
+            current_result,
+            dict
+        ):
+
+            if (
+                current_result.get(
+                    "success"
+                )
+                is False
+            ):
+
+                failed_tool = (
+                    current_step
+                )
+
+                last_tool_error = (
+                    current_result.get(
+                        "error"
+                    )
+                    or
+                    f"{current_step} failed."
+                )
+
+                detected_failure = True
+
+    # ========================================================
+    # 3. BUILD POLICY INPUT
+    # ========================================================
+    #
+    # Normal case:
+    #
+    #     evaluate_execution_policy(state)
+    #
+    # Defensive failure case:
+    #
+    #     provide a copy containing the discovered failure.
+    #
+    # This means normal policy integration tests still receive
+    # the exact original state.
+    # ========================================================
+
+    if detected_failure:
+
+        policy_state = dict(
+            state
+        )
+
+        policy_state[
+            "failed_tool"
+        ] = failed_tool
+
+        policy_state[
+            "last_tool_error"
+        ] = last_tool_error
+
+    else:
+
+        policy_state = state
+
+    # ========================================================
+    # 4. EVALUATE EXECUTION POLICY
+    # ========================================================
+
+    decision = evaluate_execution_policy(
+        policy_state
+    )
+
+    action = decision.get(
+        "action"
+    )
+
+    next_step = decision.get(
         "current_step"
     )
 
-    replan_count = state.get(
-        "replan_count",
-        0
+    reason = (
+        decision.get(
+            "reason"
+        )
+        or
+        "Execution policy produced no reason."
     )
 
-    max_replans = state.get(
-        "max_replans",
-        2
-    )
-
-    # ========================================================
-    # NO CURRENT STEP
-    # ========================================================
-
-    if not current_step:
-
-        resolution = resolve_next_step(
-            plan=plan,
-            executed_tools=executed_tools,
-            tool_results=tool_results,
-        )
-
-        # ----------------------------------------------------
-        # Plan already completed
-        # ----------------------------------------------------
-
-        if resolution.status == "complete":
-
-            trace.append({
-                "node":
-                    "observer",
-
-                "decision":
-                    "finish",
-
-                "reason":
-                    resolution.reason,
-            })
-
-            return {
-                "current_step":
-                    None,
-
-                "completed":
-                    True,
-
-                "error":
-                    None,
-
-                "trace":
-                    trace,
-            }
-
-        # ----------------------------------------------------
-        # A ready step exists
-        # ----------------------------------------------------
-
-        if resolution.status == "ready":
-
-            trace.append({
-                "node":
-                    "observer",
-
-                "decision":
-                    "continue",
-
-                "next_step":
-                    resolution.next_step,
-
-                "reason":
-                    resolution.reason,
-            })
-
-            return {
-                "current_step":
-                    resolution.next_step,
-
-                "completed":
-                    False,
-
-                "error":
-                    None,
-
-                "trace":
-                    trace,
-            }
-
-        # ----------------------------------------------------
-        # Plan is blocked/invalid
-        # ----------------------------------------------------
-
-        reason = (
-            resolution.reason
-            or
-            "No executable tool could be resolved."
-        )
-
-        trace.append({
-            "node":
-                "observer",
-
-            "decision":
-                "replan",
-
-            "status":
-                resolution.status,
-
-            "reason":
-                reason,
-
-            "blocked_tools":
-                resolution.blocked_tools,
-
-            "missing_dependencies":
-                resolution.missing_dependencies,
-        })
-
-        return {
-            "current_step":
-                None,
-
-            "failed_tool":
-                None,
-
-            "last_tool_error":
-                reason,
-
-            "completed":
-                False,
-
-            "error":
-                None,
-
-            "trace":
-                trace,
-        }
-
-    # ========================================================
-    # INSPECT CURRENT TOOL RESULT
-    # ========================================================
-
-    result = tool_results.get(
-        current_step
-    )
-
-    success = False
-
-    if isinstance(
-        result,
-        dict
-    ):
-
-        success = (
-            result.get(
-                "success"
-            )
-            is True
-        )
-
-    elif result is not None:
-
-        success = True
-
-    # ========================================================
-    # CURRENT TOOL FAILED
-    # ========================================================
-
-    if not success:
-
-        last_tool_error = (
-            state.get(
-                "last_tool_error"
-            )
-            or (
-                result.get(
-                    "error"
-                )
-                if isinstance(
-                    result,
-                    dict
-                )
-                else None
-            )
-            or
-            f"{current_step} failed."
-        )
-
-        # ----------------------------------------------------
-        # Recovery still available
-        # ----------------------------------------------------
-
-        if replan_count < max_replans:
-
-            trace.append({
-                "node":
-                    "observer",
-
-                "tool":
-                    current_step,
-
-                "status":
-                    "error",
-
-                "decision":
-                    "replan",
-
-                "reason":
-                    last_tool_error,
-
-                "replan_count":
-                    replan_count,
-            })
-
-            return {
-                "current_step":
-                    current_step,
-
-                "failed_tool":
-                    current_step,
-
-                "last_tool_error":
-                    last_tool_error,
-
-                "completed":
-                    False,
-
-                "error":
-                    None,
-
-                "trace":
-                    trace,
-            }
-
-        # ----------------------------------------------------
-        # Recovery exhausted
-        # ----------------------------------------------------
-
-        error = (
-            f"Tool '{current_step}' failed and "
-            "maximum re-planning attempts were reached."
-        )
-
-        trace.append({
-            "node":
-                "observer",
-
-            "tool":
-                current_step,
-
-            "status":
-                "error",
-
-            "decision":
-                "finish",
-
-            "reason":
-                error,
-
-            "replan_count":
-                replan_count,
-        })
-
-        return {
-            "current_step":
-                None,
-
-            "failed_tool":
-                current_step,
-
-            "last_tool_error":
-                last_tool_error,
-
-            "completed":
-                True,
-
-            "error":
-                error,
-
-            "trace":
-                trace,
-        }
-
-    # ========================================================
-    # CURRENT TOOL SUCCEEDED
-    # ========================================================
-
-    resolution = resolve_next_step(
-        plan=plan,
-        executed_tools=executed_tools,
-        tool_results=tool_results,
+    policy_error = decision.get(
+        "error"
     )
 
     # ========================================================
-    # NEXT TOOL READY
+    # 5. EXECUTE
     # ========================================================
 
-    if resolution.status == "ready":
+    if action == EXECUTE:
 
         trace.append({
             "node":
@@ -377,19 +209,19 @@ def observer_node(
             "decision":
                 "continue",
 
-            "completed_tool":
-                current_step,
-
             "next_step":
-                resolution.next_step,
+                next_step,
 
             "reason":
-                resolution.reason,
+                reason,
+
+            "error":
+                None,
         })
 
         return {
             "current_step":
-                resolution.next_step,
+                next_step,
 
             "retry_count":
                 0,
@@ -411,108 +243,68 @@ def observer_node(
         }
 
     # ========================================================
-    # PLAN COMPLETED
+    # 6. REPLAN
     # ========================================================
 
-    if resolution.status == "complete":
+    if action == REPLAN:
+
+        recovery_error = (
+            policy_error
+            or
+            last_tool_error
+            or
+            reason
+        )
+
+        recovery_tool = (
+            failed_tool
+            or
+            next_step
+            or
+            current_step
+        )
 
         trace.append({
             "node":
                 "observer",
 
             "tool":
-                current_step,
+                recovery_tool,
 
-            "status":
-                "success",
-
-            "decision":
-                "finish",
-
-            "completed_tool":
-                current_step,
-
-            "reason":
-                resolution.reason,
-        })
-
-        return {
-            "current_step":
-                None,
-
-            "retry_count":
-                0,
-
-            "failed_tool":
-                None,
-
-            "last_tool_error":
-                None,
-
-            "error":
-                None,
-
-            "completed":
-                True,
-
-            "trace":
-                trace,
-        }
-
-    # ========================================================
-    # PLAN BLOCKED / INVALID
-    # ========================================================
-
-    reason = (
-        resolution.reason
-        or
-        "No executable tool could be resolved."
-    )
-
-    # --------------------------------------------------------
-    # Recovery available
-    # --------------------------------------------------------
-
-    if replan_count < max_replans:
-
-        trace.append({
-            "node":
-                "observer",
-
-            "tool":
-                current_step,
-
-            "status":
-                resolution.status,
+            "status": (
+                "error"
+                if failed_tool
+                else "blocked"
+            ),
 
             "decision":
                 "replan",
 
-            "completed_tool":
-                current_step,
-
             "reason":
                 reason,
 
-            "blocked_tools":
-                resolution.blocked_tools,
-
-            "missing_dependencies":
-                resolution.missing_dependencies,
+            "error":
+                recovery_error,
 
             "replan_count":
-                replan_count,
+                state.get(
+                    "replan_count",
+                    0
+                ),
         })
 
         return {
-            "current_step":
-                None,
+            "current_step": (
+                failed_tool
+                if failed_tool
+                else None
+            ),
 
             "failed_tool":
-                None,
+                failed_tool,
 
             "last_tool_error":
-                reason,
+                recovery_error,
 
             "retry_count":
                 0,
@@ -528,13 +320,89 @@ def observer_node(
         }
 
     # ========================================================
-    # BLOCKED AND RECOVERY EXHAUSTED
+    # 7. FINISH
+    # ========================================================
+
+    if action == FINISH:
+
+        final_error = (
+            policy_error
+        )
+
+        # If we're finishing because a failed tool exhausted
+        # recovery, preserve its error even if the policy
+        # returned no separate error.
+        if (
+            failed_tool
+            and
+            not final_error
+        ):
+
+            final_error = (
+                last_tool_error
+                or
+                f"{failed_tool} failed."
+            )
+
+        trace.append({
+            "node":
+                "observer",
+
+            "tool": (
+                failed_tool
+                or
+                current_step
+            ),
+
+            "status": (
+                "error"
+                if final_error
+                else "success"
+            ),
+
+            "decision":
+                "finish",
+
+            "reason":
+                reason,
+
+            "error":
+                final_error,
+        })
+
+        return {
+            "current_step":
+                None,
+
+            "retry_count":
+                0,
+
+            "failed_tool":
+                failed_tool,
+
+            "last_tool_error": (
+                last_tool_error
+                if failed_tool
+                else None
+            ),
+
+            "completed":
+                True,
+
+            "error":
+                final_error,
+
+            "trace":
+                trace,
+        }
+
+    # ========================================================
+    # 8. DEFENSIVE FALLBACK
     # ========================================================
 
     error = (
-        "Execution plan could not continue and "
-        "maximum re-planning attempts were reached. "
-        f"{reason}"
+        "Execution policy returned an unsupported "
+        f"action: {action}"
     )
 
     trace.append({
@@ -545,7 +413,7 @@ def observer_node(
             current_step,
 
         "status":
-            resolution.status,
+            "error",
 
         "decision":
             "finish",
@@ -553,14 +421,8 @@ def observer_node(
         "reason":
             error,
 
-        "blocked_tools":
-            resolution.blocked_tools,
-
-        "missing_dependencies":
-            resolution.missing_dependencies,
-
-        "replan_count":
-            replan_count,
+        "error":
+            error,
     })
 
     return {
@@ -568,10 +430,16 @@ def observer_node(
             None,
 
         "failed_tool":
-            None,
+            failed_tool,
 
-        "last_tool_error":
-            reason,
+        "last_tool_error": (
+            last_tool_error
+            or
+            error
+        ),
+
+        "retry_count":
+            0,
 
         "completed":
             True,
@@ -592,22 +460,22 @@ def route_after_observation(
     state: AgentState
 ) -> str:
     """
-    Decide where LangGraph should route after observation.
+    Route LangGraph after observer execution.
 
     Returns:
 
-        execute
-            A tool is ready for execution.
+    execute
+        Another tool should execute.
 
-        replan
-            Recovery planning is required.
+    replan
+        Recovery planning is required.
 
-        finish
-            Workflow has completed or cannot recover.
+    finish
+        Workflow has completed or cannot recover.
     """
 
     # ========================================================
-    # WORKFLOW COMPLETED
+    # 1. COMPLETED
     # ========================================================
 
     if state.get(
@@ -618,7 +486,7 @@ def route_after_observation(
         return "finish"
 
     # ========================================================
-    # CHECK MOST RECENT OBSERVER DECISION
+    # 2. READ OBSERVER DECISION
     # ========================================================
 
     trace = state.get(
@@ -658,7 +526,7 @@ def route_after_observation(
                 return "finish"
 
     # ========================================================
-    # FALLBACK ROUTING
+    # 3. DEFENSIVE FALLBACK
     # ========================================================
 
     if state.get(
@@ -668,4 +536,3 @@ def route_after_observation(
         return "execute"
 
     return "finish"
-

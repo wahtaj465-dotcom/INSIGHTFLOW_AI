@@ -1,4 +1,6 @@
-from backend.orchestration.state import AgentState
+from backend.orchestration.state import (
+    AgentState,
+)
 
 from backend.orchestration.tool_registry import (
     get_tool_definition,
@@ -13,26 +15,30 @@ from backend.orchestration.dependency_resolver import (
 )
 
 
+# ============================================================
+# TOOL EXECUTOR NODE
+# ============================================================
+
 def tool_executor_node(
     state: AgentState
 ) -> dict:
     """
-    Execute the current tool dynamically using
-    metadata from the central tool registry.
+    Execute the current tool dynamically using metadata
+    from the central tool registry.
 
     Responsibilities:
-    - find the current tool
+    - identify the current tool
     - retrieve its registry definition
-    - validate tool dependencies
-    - build inputs dynamically
+    - validate dependencies
+    - build tool inputs dynamically
     - execute the tool
-    - store the raw tool result
+    - store raw tool results
     - promote declared outputs into AgentState
     - record success/failure information
     """
 
     # ========================================================
-    # READ STATE
+    # 1. READ STATE
     # ========================================================
 
     executed_tools = list(
@@ -61,24 +67,32 @@ def tool_executor_node(
     )
 
     # ========================================================
-    # NO CURRENT TOOL
+    # 2. NO CURRENT STEP
     # ========================================================
 
     if not current_step:
 
         trace.append({
-            "node": "tool_executor",
-            "status": "skipped",
-            "reason": "No current tool step exists.",
+            "node":
+                "tool_executor",
+
+            "status":
+                "skipped",
+
+            "reason":
+                "No current tool step exists.",
         })
 
         return {
-            "current_step": None,
-            "trace": trace,
+            "current_step":
+                None,
+
+            "trace":
+                trace,
         }
 
     # ========================================================
-    # GET TOOL DEFINITION
+    # 3. GET TOOL DEFINITION
     # ========================================================
 
     definition = get_tool_definition(
@@ -92,10 +106,17 @@ def tool_executor_node(
         )
 
         trace.append({
-            "node": "tool_executor",
-            "tool": current_step,
-            "status": "error",
-            "error": error,
+            "node":
+                "tool_executor",
+
+            "tool":
+                current_step,
+
+            "status":
+                "error",
+
+            "error":
+                error,
         })
 
         return {
@@ -116,7 +137,7 @@ def tool_executor_node(
         }
 
     # ========================================================
-    # CHECK TOOL DEPENDENCIES
+    # 4. CHECK DEPENDENCIES
     # ========================================================
 
     dependency_status = (
@@ -126,9 +147,15 @@ def tool_executor_node(
         )
     )
 
-    if not dependency_status[
-        "ready"
-    ]:
+    dependencies_ready = (
+        dependency_status.get(
+            "ready",
+            False,
+        )
+    )
+    
+    if not dependencies_ready:
+
 
         missing_dependencies = (
             dependency_status.get(
@@ -137,27 +164,75 @@ def tool_executor_node(
             )
         )
 
-        error = (
-            f"Tool '{current_step}' cannot execute because "
-            f"required dependencies are not satisfied: "
-            f"{missing_dependencies}"
+        failed_dependencies = (
+            dependency_status.get(
+                "failed_dependencies",
+                []
+            )
         )
 
-        result = {
+        reason = dependency_status.get(
+            "reason"
+        )
+
+        # ----------------------------------------------------
+        # Build fallback reason if resolver did not provide one
+        # ----------------------------------------------------
+
+        if not reason:
+
+            if failed_dependencies:
+
+                reason = (
+                    f"Tool '{current_step}' cannot execute "
+                    "because required dependencies failed: "
+                    f"{failed_dependencies}"
+                )
+
+            elif missing_dependencies:
+
+                reason = (
+                    f"Tool '{current_step}' cannot execute "
+                    "because required dependencies are "
+                    f"missing: {missing_dependencies}"
+                )
+
+            else:
+
+                reason = (
+                    f"Tool '{current_step}' dependencies "
+                    "are not satisfied."
+                )
+
+        # ----------------------------------------------------
+        # IMPORTANT:
+        # Record blocked execution as failed tool result
+        # ----------------------------------------------------
+
+        blocked_result = {
             "success":
                 False,
 
             "error":
-                error,
+                reason,
+
+            "blocked":
+                True,
 
             "missing_dependencies":
                 missing_dependencies,
+
+            "failed_dependencies":
+                failed_dependencies,
         }
 
-        # Store the blocked execution result.
         tool_results[
             current_step
-        ] = result
+        ] = blocked_result
+
+        # ----------------------------------------------------
+        # Trace
+        # ----------------------------------------------------
 
         trace.append({
             "node":
@@ -169,12 +244,19 @@ def tool_executor_node(
             "status":
                 "blocked",
 
+            "reason":
+                reason,
+
             "missing_dependencies":
                 missing_dependencies,
 
-            "error":
-                error,
+            "failed_dependencies":
+                failed_dependencies,
         })
+
+        # ----------------------------------------------------
+        # Return failure state
+        # ----------------------------------------------------
 
         return {
             "current_step":
@@ -190,17 +272,19 @@ def tool_executor_node(
                 current_step,
 
             "last_tool_error":
-                error,
+                reason,
 
             "error":
-                error,
+                reason,
 
             "trace":
                 trace,
         }
 
+
+
     # ========================================================
-    # GET EXECUTABLE TOOL
+    # 5. GET EXECUTABLE TOOL
     # ========================================================
 
     tool = definition.get(
@@ -215,10 +299,17 @@ def tool_executor_node(
         )
 
         trace.append({
-            "node": "tool_executor",
-            "tool": current_step,
-            "status": "error",
-            "error": error,
+            "node":
+                "tool_executor",
+
+            "tool":
+                current_step,
+
+            "status":
+                "error",
+
+            "error":
+                error,
         })
 
         return {
@@ -239,7 +330,7 @@ def tool_executor_node(
         }
 
     # ========================================================
-    # BUILD INPUT DYNAMICALLY
+    # 6. BUILD TOOL INPUT DYNAMICALLY
     # ========================================================
 
     input_mapping = definition.get(
@@ -253,7 +344,7 @@ def tool_executor_node(
     )
 
     # ========================================================
-    # EXECUTE TOOL
+    # 7. EXECUTE TOOL
     # ========================================================
 
     try:
@@ -265,12 +356,15 @@ def tool_executor_node(
     except Exception as exc:
 
         result = {
-            "success": False,
-            "error": str(exc),
+            "success":
+                False,
+
+            "error":
+                str(exc),
         }
 
     # ========================================================
-    # NORMALIZE RESULT
+    # 8. NORMALIZE RESULT
     # ========================================================
 
     if not isinstance(
@@ -279,12 +373,15 @@ def tool_executor_node(
     ):
 
         result = {
-            "success": True,
-            "result": result,
+            "success":
+                True,
+
+            "result":
+                result,
         }
 
     # ========================================================
-    # STORE RAW TOOL RESULT
+    # 9. STORE RAW RESULT
     # ========================================================
 
     tool_results[
@@ -299,7 +396,7 @@ def tool_executor_node(
     )
 
     # ========================================================
-    # MARK SUCCESSFUL EXECUTION
+    # 10. RECORD SUCCESSFUL EXECUTION
     # ========================================================
 
     if success:
@@ -314,7 +411,7 @@ def tool_executor_node(
             )
 
     # ========================================================
-    # BASE STATE UPDATE
+    # 11. BASE STATE UPDATE
     # ========================================================
 
     updates = {
@@ -329,7 +426,7 @@ def tool_executor_node(
     }
 
     # ========================================================
-    # PROMOTE OUTPUTS DYNAMICALLY
+    # 12. PROMOTE DECLARED OUTPUTS
     # ========================================================
 
     if success:
@@ -351,7 +448,7 @@ def tool_executor_node(
             )
 
     # ========================================================
-    # HANDLE SUCCESS / FAILURE
+    # 13. SUCCESS / FAILURE STATE
     # ========================================================
 
     if success:
@@ -391,7 +488,7 @@ def tool_executor_node(
         ] = error
 
     # ========================================================
-    # TRACE
+    # 14. TRACE
     # ========================================================
 
     trace.append({
@@ -424,5 +521,9 @@ def tool_executor_node(
     updates[
         "trace"
     ] = trace
+
+    # ========================================================
+    # 15. RETURN
+    # ========================================================
 
     return updates

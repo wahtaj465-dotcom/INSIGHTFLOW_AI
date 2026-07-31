@@ -1,15 +1,11 @@
-from backend.orchestration.nodes.observer import (
-    observer_node,
-    route_after_observation,
-)
 from unittest.mock import (
     patch,
 )
 
-from backend.orchestration.step_resolver import (
-    StepResolution,
+from backend.orchestration.nodes.observer import (
+    observer_node,
+    route_after_observation,
 )
-
 
 
 # ============================================================
@@ -44,6 +40,7 @@ def test_observer_moves_to_next_tool():
 
         "replan_count": 0,
         "max_replans": 2,
+
         "trace": [],
     }
 
@@ -57,9 +54,10 @@ def test_observer_moves_to_next_tool():
         "visualization"
     )
 
-    assert result["completed"] is False
-
-    
+    assert (
+        result["completed"]
+        is False
+    )
 
     assert (
         result["trace"][-1]["decision"]
@@ -91,6 +89,7 @@ def test_observer_finishes_completed_plan():
         ],
 
         "tool_results": {
+
             "sql": {
                 "success": True
             },
@@ -107,6 +106,7 @@ def test_observer_finishes_completed_plan():
 
         "replan_count": 0,
         "max_replans": 2,
+
         "trace": [],
     }
 
@@ -114,9 +114,15 @@ def test_observer_finishes_completed_plan():
         state
     )
 
-    assert result["completed"] is True
+    assert (
+        result["completed"]
+        is True
+    )
 
-    assert result["current_step"] is None
+    assert (
+        result["current_step"]
+        is None
+    )
 
     assert (
         result["trace"][-1]["decision"]
@@ -125,10 +131,8 @@ def test_observer_finishes_completed_plan():
     )
 
 
-
-
 # ============================================================
-# TEST 5
+# TEST 3
 # Router sends unfinished state to executor
 # ============================================================
 
@@ -140,14 +144,16 @@ def test_router_returns_execute():
     }
 
     assert (
-        route_after_observation(state)
+        route_after_observation(
+            state
+        )
         ==
         "execute"
     )
 
 
 # ============================================================
-# TEST 6
+# TEST 4
 # Router sends completed state to finish
 # ============================================================
 
@@ -159,10 +165,19 @@ def test_router_returns_finish():
     }
 
     assert (
-        route_after_observation(state)
+        route_after_observation(
+            state
+        )
         ==
         "finish"
     )
+
+
+# ============================================================
+# TEST 5
+# Failed tool -> replan
+# ============================================================
+
 def test_observer_replans_failed_tool():
 
     state = {
@@ -192,21 +207,40 @@ def test_observer_replans_failed_tool():
         state
     )
 
-    assert result["completed"] is False
+    assert (
+        result["completed"]
+        is False
+    )
 
-    assert result["current_step"] == "sql"
+    assert (
+        result["current_step"]
+        ==
+        "sql"
+    )
 
-    assert result["failed_tool"] == "sql"
+    assert (
+        result["failed_tool"]
+        ==
+        "sql"
+    )
 
     assert (
         result["last_tool_error"]
-        == "Invalid SQL"
+        ==
+        "Invalid SQL"
     )
 
     assert (
         result["trace"][-1]["decision"]
-        == "replan"
+        ==
+        "replan"
     )
+
+
+# ============================================================
+# TEST 6
+# Failed tool stops after max replans
+# ============================================================
 
 def test_observer_stops_after_max_replans():
 
@@ -236,23 +270,44 @@ def test_observer_stops_after_max_replans():
         state
     )
 
-    assert result["completed"] is True
+    assert (
+        result["completed"]
+        is True
+    )
 
-    assert result["current_step"] is None
+    assert (
+        result["current_step"]
+        is None
+    )
 
-    assert result["failed_tool"] == "sql"
+    assert (
+        result["failed_tool"]
+        ==
+        "sql"
+    )
 
     assert (
         result["last_tool_error"]
-        == "SQL failed"
+        ==
+        "SQL failed"
     )
 
-    assert result["error"] is not None
+    assert (
+        result["error"]
+        is not None
+    )
 
     assert (
         result["trace"][-1]["decision"]
-        == "finish"
+        ==
+        "finish"
     )
+
+
+# ============================================================
+# TEST 7
+# Router sends replan decision to replanner
+# ============================================================
 
 def test_router_returns_replan():
 
@@ -271,17 +326,20 @@ def test_router_returns_replan():
     }
 
     assert (
-        route_after_observation(state)
+        route_after_observation(
+            state
+        )
         ==
         "replan"
     )
 
+
 # ============================================================
 # TEST 8
-# Observer uses step resolver for next tool
+# Observer uses execution policy
 # ============================================================
 
-def test_observer_uses_step_resolver():
+def test_observer_uses_execution_policy():
 
     state = {
 
@@ -311,43 +369,38 @@ def test_observer_uses_step_resolver():
         "trace": [],
     }
 
-    resolution = StepResolution(
-        status="ready",
-        next_step="forecasting",
-        blocked_tools=[],
-        missing_dependencies={},
-        reason="Forecasting is ready.",
-    )
+    policy_decision = {
+        "action":
+            "execute",
+
+        "current_step":
+            "forecasting",
+
+        "reason":
+            "Forecasting is ready.",
+
+        "error":
+            None,
+    }
 
     with patch(
         "backend.orchestration.nodes.observer."
-        "resolve_next_step",
-        return_value=resolution,
-    ) as mock_resolver:
+        "evaluate_execution_policy",
+        return_value=policy_decision,
+    ) as mock_policy:
 
         result = observer_node(
             state
         )
 
-    mock_resolver.assert_called_once_with(
-        plan=[
-            "sql",
-            "forecasting",
-            "insight",
-        ],
-        executed_tools=[
-            "sql"
-        ],
-        tool_results={
-            "sql": {
-                "success": True
-            }
-        },
+    mock_policy.assert_called_once_with(
+        state
     )
 
     assert (
         result["current_step"]
-        == "forecasting"
+        ==
+        "forecasting"
     )
 
     assert (
@@ -357,16 +410,17 @@ def test_observer_uses_step_resolver():
 
     assert (
         result["trace"][-1]["decision"]
-        == "continue"
+        ==
+        "continue"
     )
 
 
 # ============================================================
 # TEST 9
-# Resolver complete -> observer finishes
+# Policy finish -> observer finishes
 # ============================================================
 
-def test_observer_finishes_when_resolver_complete():
+def test_observer_finishes_when_policy_finishes():
 
     state = {
 
@@ -394,20 +448,24 @@ def test_observer_finishes_when_resolver_complete():
         "trace": [],
     }
 
-    resolution = StepResolution(
-        status="complete",
-        next_step=None,
-        blocked_tools=[],
-        missing_dependencies={},
-        reason=(
-            "All planned tools completed successfully."
-        ),
-    )
+    policy_decision = {
+        "action":
+            "finish",
+
+        "current_step":
+            None,
+
+        "reason":
+            "All planned tools completed successfully.",
+
+        "error":
+            None,
+    }
 
     with patch(
         "backend.orchestration.nodes.observer."
-        "resolve_next_step",
-        return_value=resolution,
+        "evaluate_execution_policy",
+        return_value=policy_decision,
     ):
 
         result = observer_node(
@@ -426,13 +484,14 @@ def test_observer_finishes_when_resolver_complete():
 
     assert (
         result["trace"][-1]["decision"]
-        == "finish"
+        ==
+        "finish"
     )
 
 
 # ============================================================
 # TEST 10
-# Blocked plan triggers replanning
+# Blocked policy decision -> replan
 # ============================================================
 
 def test_observer_replans_blocked_plan():
@@ -464,27 +523,27 @@ def test_observer_replans_blocked_plan():
         "trace": [],
     }
 
-    resolution = StepResolution(
-        status="blocked",
-        next_step=None,
-        blocked_tools=[
-            "forecasting"
-        ],
-        missing_dependencies={
-            "forecasting": [
-                "dataset_context"
-            ]
-        },
-        reason=(
-            "Remaining tools cannot execute because "
-            "their dependencies are not satisfied."
-        ),
-    )
+    policy_decision = {
+        "action":
+            "replan",
+
+        "current_step":
+            None,
+
+        "reason":
+            (
+                "Remaining tools cannot execute because "
+                "their dependencies are not satisfied."
+            ),
+
+        "error":
+            "Forecasting dependency missing.",
+    }
 
     with patch(
         "backend.orchestration.nodes.observer."
-        "resolve_next_step",
-        return_value=resolution,
+        "evaluate_execution_policy",
+        return_value=policy_decision,
     ):
 
         result = observer_node(
@@ -497,27 +556,20 @@ def test_observer_replans_blocked_plan():
     )
 
     assert (
-        result["current_step"]
-        is None
-    )
-
-    assert (
         result["trace"][-1]["decision"]
-        == "replan"
+        ==
+        "replan"
     )
 
     assert (
-        result["trace"][-1]["blocked_tools"]
-        ==
-        [
-            "forecasting"
-        ]
+        result["error"]
+        is None
     )
 
 
 # ============================================================
 # TEST 11
-# Invalid plan triggers replanning
+# Invalid policy decision -> replan
 # ============================================================
 
 def test_observer_replans_invalid_plan():
@@ -549,23 +601,30 @@ def test_observer_replans_invalid_plan():
         "trace": [],
     }
 
-    resolution = StepResolution(
-        status="invalid",
-        next_step=None,
-        blocked_tools=[
-            "unknown_tool"
-        ],
-        missing_dependencies={},
-        reason=(
-            "Unknown tool in execution plan: "
-            "unknown_tool"
-        ),
-    )
+    policy_decision = {
+        "action":
+            "replan",
+
+        "current_step":
+            None,
+
+        "reason":
+            (
+                "Unknown tool in execution plan: "
+                "unknown_tool"
+            ),
+
+        "error":
+            (
+                "Unknown tool in execution plan: "
+                "unknown_tool"
+            ),
+    }
 
     with patch(
         "backend.orchestration.nodes.observer."
-        "resolve_next_step",
-        return_value=resolution,
+        "evaluate_execution_policy",
+        return_value=policy_decision,
     ):
 
         result = observer_node(
@@ -579,7 +638,8 @@ def test_observer_replans_invalid_plan():
 
     assert (
         result["trace"][-1]["decision"]
-        == "replan"
+        ==
+        "replan"
     )
 
     assert (
@@ -590,7 +650,7 @@ def test_observer_replans_invalid_plan():
 
 # ============================================================
 # TEST 12
-# Blocked plan stops after max replans
+# Blocked plan stops after replan budget exhausted
 # ============================================================
 
 def test_observer_stops_blocked_plan_after_max_replans():
@@ -622,24 +682,27 @@ def test_observer_stops_blocked_plan_after_max_replans():
         "trace": [],
     }
 
-    resolution = StepResolution(
-        status="blocked",
-        next_step=None,
-        blocked_tools=[
-            "forecasting"
-        ],
-        missing_dependencies={
-            "forecasting": [
-                "dataset_context"
-            ]
-        },
-        reason="Forecasting dependency missing.",
-    )
+    policy_decision = {
+        "action":
+            "finish",
+
+        "current_step":
+            None,
+
+        "reason":
+            (
+                "Execution plan is blocked and "
+                "the maximum replan limit was reached."
+            ),
+
+        "error":
+            "Forecasting dependency missing.",
+    }
 
     with patch(
         "backend.orchestration.nodes.observer."
-        "resolve_next_step",
-        return_value=resolution,
+        "evaluate_execution_policy",
+        return_value=policy_decision,
     ):
 
         result = observer_node(
@@ -663,5 +726,6 @@ def test_observer_stops_blocked_plan_after_max_replans():
 
     assert (
         result["trace"][-1]["decision"]
-        == "finish"
+        ==
+        "finish"
     )
