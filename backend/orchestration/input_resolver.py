@@ -12,27 +12,60 @@ def _resolve_state_value(
     state: AgentState,
 ) -> Any:
     """
-    Resolve an input value from the current AgentState.
+    Resolve an input value from AgentState.
 
-    Examples:
+    Supports both:
 
-        dataset_id
+        "dataset_id"
             -> state["dataset_id"]
 
-        question
+        "question"
             -> state["question"]
 
-        sql_result
-            -> state["sql_result"]
+    And nested state paths:
 
-        generated_sql
-            -> state["generated_sql"]
+        "tool_outputs.ml_anomaly_result"
+            -> state["tool_outputs"]["ml_anomaly_result"]
     """
 
-    return state.get(
-        source
-    )
+    if not isinstance(
+        source,
+        str
+    ):
+        return None
 
+    # --------------------------------------------------------
+    # Direct state value
+    # --------------------------------------------------------
+
+    if "." not in source:
+
+        return state.get(
+            source
+        )
+
+    # --------------------------------------------------------
+    # Nested state value
+    # --------------------------------------------------------
+
+    value: Any = state
+
+    for key in source.split("."):
+
+        if isinstance(
+            value,
+            dict
+        ):
+
+            value = value.get(
+                key
+            )
+
+        else:
+
+            return None
+
+    return value
 
 # ============================================================
 # BUILD TOOL INPUT

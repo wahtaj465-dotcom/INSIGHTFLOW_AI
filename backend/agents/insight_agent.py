@@ -5,25 +5,24 @@ import pandas as pd
 
 class InsightAgent:
     """
-    InsightFlow Insight Agent V4.
+    InsightFlow Insight Agent V5.
 
-    Strategy:
+    Supports analytical evidence from:
+
+        - SQL analysis
+        - Scikit-learn ML anomaly detection
+        - deterministic anomaly detection
+        - data quality analysis
+        - EDA
+
+    Architecture:
 
         SQL result
-            ↓
-        Try LLM insight
-            ↓
-        Success?
-         /   \
-       yes    no
-       ↓       ↓
-      LLM    Local fallback
-
-    The LLM is an enrichment layer.
-
-    A temporary LLM failure, quota error, timeout,
-    connection problem, or other generation failure
-    must NOT destroy a valid SQL analysis.
+             \
+              \
+        ML anomalies ----> Insight Agent ----> LLM explanation
+              /
+        EDA / Quality
     """
 
     def __init__(
@@ -34,7 +33,6 @@ class InsightAgent:
         self.llm_service = llm_service
         self.max_rows = max_rows
 
-
     # ========================================================
     # 1. VALIDATE INPUTS
     # ========================================================
@@ -43,42 +41,76 @@ class InsightAgent:
         self,
         question,
         sql,
-        result
+        result,
+        ml_anomaly_result=None
     ):
+        """
+        Validate Insight Agent inputs.
 
-        if not isinstance(question, str):
+        SQL is required when the analysis depends on SQL.
 
+        SQL may be empty when a valid ML anomaly result
+        is supplied. This allows ML-only questions such as:
+
+            "Find anomalous records."
+
+        to go directly:
+
+            ml_anomaly -> insight
+        """
+
+        if not isinstance(
+            question,
+            str
+        ):
             raise TypeError(
                 "Question must be a string."
             )
 
         if not question.strip():
-
             raise ValueError(
                 "Question cannot be empty."
             )
 
-        if not isinstance(sql, str):
-
+        if not isinstance(
+            sql,
+            str
+        ):
             raise TypeError(
                 "SQL must be a string."
-            )
-
-        if not sql.strip():
-
-            raise ValueError(
-                "SQL cannot be empty."
             )
 
         if not isinstance(
             result,
             pd.DataFrame
         ):
-
             raise TypeError(
-                "SQL result must be a Pandas DataFrame."
+                "Analytical result must be a Pandas DataFrame."
             )
 
+        # ----------------------------------------------------
+        # SQL validation
+        # ----------------------------------------------------
+        #
+        # SQL is optional when ML anomaly evidence exists.
+        #
+
+        has_ml_evidence = (
+            isinstance(
+                ml_anomaly_result,
+                dict
+            )
+            and
+            bool(
+                ml_anomaly_result
+            )
+        )
+
+        if not sql.strip() and not has_ml_evidence:
+            raise ValueError(
+                "SQL cannot be empty when no ML anomaly "
+                "result is provided."
+            )
 
     # ========================================================
     # 2. PREPARE SQL RESULT
@@ -88,11 +120,15 @@ class InsightAgent:
         self,
         result
     ):
+        """
+        Convert the analytical result DataFrame into
+        prompt-safe text.
+        """
 
-        if result.empty:
+        if result is None or result.empty:
 
             return (
-                "The SQL query returned zero rows."
+                "No SQL result was provided."
             )
 
         limited_result = (
@@ -117,7 +153,6 @@ class InsightAgent:
 
         return result_text
 
-
     # ========================================================
     # 3. IDENTIFY RELEVANT COLUMNS
     # ========================================================
@@ -128,6 +163,9 @@ class InsightAgent:
         sql,
         eda_results
     ):
+        """
+        Identify EDA columns relevant to the question.
+        """
 
         if not eda_results:
 
@@ -158,7 +196,6 @@ class InsightAgent:
                     section_data.keys()
                 )
 
-
         correlations = (
             eda_results.get(
                 "correlations",
@@ -174,7 +211,10 @@ class InsightAgent:
             for pair in correlations.keys():
 
                 if (
-                    isinstance(pair, str)
+                    isinstance(
+                        pair,
+                        str
+                    )
                     and
                     " vs " in pair
                 ):
@@ -194,15 +234,12 @@ class InsightAgent:
                         column_2
                     )
 
-
         search_text = (
             f"{question or ''} "
             f"{sql or ''}"
         ).lower()
 
-
         relevant_columns = []
-
 
         for column in available_columns:
 
@@ -211,7 +248,6 @@ class InsightAgent:
             )
 
             variants = {
-
                 column_string.lower(),
 
                 column_string
@@ -221,7 +257,6 @@ class InsightAgent:
                     " "
                 )
             }
-
 
             for variant in variants:
 
@@ -246,11 +281,9 @@ class InsightAgent:
 
                     break
 
-
         return sorted(
             relevant_columns
         )
-
 
     # ========================================================
     # 4. PREPARE QUALITY CONTEXT
@@ -269,13 +302,11 @@ class InsightAgent:
                 "was provided."
             )
 
-
         relevant_columns = set(
             relevant_columns or []
         )
 
         lines = []
-
 
         duplicate_rows = (
             quality_report.get(
@@ -290,7 +321,6 @@ class InsightAgent:
                 f"Duplicate rows: "
                 f"{duplicate_rows}"
             )
-
 
         missing_values = (
             quality_report.get(
@@ -322,7 +352,6 @@ class InsightAgent:
                             column
                         ] = count
 
-
             if relevant_missing:
 
                 lines.append(
@@ -336,7 +365,6 @@ class InsightAgent:
                     lines.append(
                         f"- {column}: {count}"
                     )
-
 
         invalid_dates = (
             quality_report.get(
@@ -368,7 +396,6 @@ class InsightAgent:
                             column
                         ] = count
 
-
             if relevant_invalid:
 
                 lines.append(
@@ -383,7 +410,6 @@ class InsightAgent:
                         f"- {column}: {count}"
                     )
 
-
         if not lines:
 
             return (
@@ -391,14 +417,12 @@ class InsightAgent:
                 "were detected for this analysis."
             )
 
-
         return "\n".join(
             lines
         )
 
-
     # ========================================================
-    # 5. PREPARE ANOMALY CONTEXT
+    # 5. PREPARE DETERMINISTIC ANOMALY CONTEXT
     # ========================================================
 
     def prepare_anomaly_context(
@@ -406,6 +430,12 @@ class InsightAgent:
         anomalies,
         relevant_columns=None
     ):
+        """
+        Prepare the existing deterministic anomaly report.
+
+        This remains separate from the new ML anomaly
+        detection evidence.
+        """
 
         if not anomalies:
 
@@ -414,17 +444,23 @@ class InsightAgent:
                 "were detected."
             )
 
-
         relevant_columns = set(
             relevant_columns or []
         )
 
         lines = []
 
+        # ----------------------------------------------------
+        # Existing anomaly structure
+        # ----------------------------------------------------
 
         for column, info in (
             anomalies.items()
         ):
+
+            # ML anomaly detection is handled separately.
+            if column == "ml_anomaly_detection":
+                continue
 
             if (
                 relevant_columns
@@ -434,14 +470,12 @@ class InsightAgent:
 
                 continue
 
-
             if not isinstance(
                 info,
                 dict
             ):
 
                 continue
-
 
             negative_values = (
                 info.get(
@@ -469,7 +503,6 @@ class InsightAgent:
                 )
             )
 
-
             if not (
                 negative_values
                 or
@@ -478,11 +511,9 @@ class InsightAgent:
 
                 continue
 
-
             lines.append(
                 f"Column: {column}"
             )
-
 
             if negative_values:
 
@@ -491,14 +522,12 @@ class InsightAgent:
                     f"{negative_values}"
                 )
 
-
             if outliers:
 
                 lines.append(
                     "- IQR outliers: "
                     f"{outliers}"
                 )
-
 
             if (
                 lower_bound is not None
@@ -522,22 +551,261 @@ class InsightAgent:
 
                     pass
 
-
         if not lines:
 
             return (
-                "No relevant numerical anomalies "
-                "were detected for this analysis."
+                "No relevant deterministic numerical "
+                "anomalies were detected."
             )
-
 
         return "\n".join(
             lines
         )
 
+    # ========================================================
+    # 6. PREPARE ML ANOMALY CONTEXT
+    # ========================================================
+
+    def prepare_ml_anomaly_context(
+        self,
+        ml_anomaly_result
+    ):
+        """
+        Convert the mathematical Isolation Forest result
+        into concise evidence for the Insight Agent.
+
+        IMPORTANT:
+
+        The LLM does NOT determine which records are
+        anomalous.
+
+        Isolation Forest has already made that decision.
+        The LLM only explains the returned evidence.
+        """
+
+        if not ml_anomaly_result:
+
+            return (
+                "No Scikit-learn ML anomaly detection "
+                "result was provided."
+            )
+
+        if not isinstance(
+            ml_anomaly_result,
+            dict
+        ):
+
+            return (
+                "The ML anomaly detection result "
+                "was not in the expected format."
+            )
+
+        lines = []
+
+        algorithm = (
+            ml_anomaly_result.get(
+                "algorithm",
+                "Isolation Forest"
+            )
+        )
+
+        model_type = (
+            ml_anomaly_result.get(
+                "model_type",
+                "unsupervised machine learning"
+            )
+        )
+
+        rows_analyzed = (
+            ml_anomaly_result.get(
+                "rows_analyzed"
+            )
+        )
+
+        features_used = (
+            ml_anomaly_result.get(
+                "features_used",
+                []
+            )
+        )
+
+        contamination = (
+            ml_anomaly_result.get(
+                "contamination"
+            )
+        )
+
+        anomaly_count = (
+            ml_anomaly_result.get(
+                "anomaly_count",
+                0
+            )
+        )
+
+        anomaly_percentage = (
+            ml_anomaly_result.get(
+                "anomaly_percentage",
+                0
+            )
+        )
+
+        lines.append(
+            f"Algorithm: {algorithm}"
+        )
+
+        lines.append(
+            f"Model type: {model_type}"
+        )
+
+        if rows_analyzed is not None:
+
+            lines.append(
+                f"Rows analyzed: {rows_analyzed}"
+            )
+
+        if features_used:
+
+            lines.append(
+                "Numerical features used: "
+                f"{', '.join(map(str, features_used))}"
+            )
+
+        if contamination is not None:
+
+            lines.append(
+                f"Configured contamination: "
+                f"{contamination}"
+            )
+
+        lines.append(
+            f"ML-detected anomaly count: "
+            f"{anomaly_count}"
+        )
+
+        lines.append(
+            f"ML-detected anomaly percentage: "
+            f"{anomaly_percentage}%"
+        )
+
+        # ----------------------------------------------------
+        # Actual anomalous records
+        # ----------------------------------------------------
+
+        anomaly_rows = (
+            ml_anomaly_result.get(
+                "anomalies",
+                []
+            )
+        )
+
+        if not isinstance(
+            anomaly_rows,
+            list
+        ):
+
+            anomaly_rows = []
+
+        if anomaly_rows:
+
+            lines.append(
+                ""
+            )
+
+            lines.append(
+                "ML-detected anomalous records:"
+            )
+
+            limited_rows = (
+                anomaly_rows[
+                    :self.max_rows
+                ]
+            )
+
+            for anomaly in limited_rows:
+
+                if not isinstance(
+                    anomaly,
+                    dict
+                ):
+
+                    continue
+
+                row_index = (
+                    anomaly.get(
+                        "row_index"
+                    )
+                )
+
+                anomaly_score = (
+                    anomaly.get(
+                        "anomaly_score"
+                    )
+                )
+
+                values = []
+
+                for key, value in (
+                    anomaly.items()
+                ):
+
+                    if key in {
+                        "row_index",
+                        "anomaly_score"
+                    }:
+
+                        continue
+
+                    values.append(
+                        f"{key}={value}"
+                    )
+
+                record_text = (
+                    f"row_index={row_index}"
+                )
+
+                if anomaly_score is not None:
+
+                    record_text += (
+                        f", anomaly_score="
+                        f"{anomaly_score}"
+                    )
+
+                if values:
+
+                    record_text += (
+                        ", "
+                        +
+                        ", ".join(
+                            values
+                        )
+                    )
+
+                lines.append(
+                    f"- {record_text}"
+                )
+
+            if len(anomaly_rows) > self.max_rows:
+
+                lines.append(
+                    f"... and "
+                    f"{len(anomaly_rows) - self.max_rows} "
+                    "additional ML-detected anomalous "
+                    "records."
+                )
+
+        else:
+
+            lines.append(
+                "No individual ML anomaly records "
+                "were returned."
+            )
+
+        return "\n".join(
+            lines
+        )
 
     # ========================================================
-    # 6. PREPARE RELEVANT EDA CONTEXT
+    # 7. PREPARE RELEVANT EDA CONTEXT
     # ========================================================
 
     def prepare_eda_context(
@@ -552,7 +820,6 @@ class InsightAgent:
                 "No EDA information was provided."
             )
 
-
         if not relevant_columns:
 
             return (
@@ -560,13 +827,11 @@ class InsightAgent:
                 "were identified."
             )
 
-
         relevant_columns = set(
             relevant_columns
         )
 
         lines = []
-
 
         # ----------------------------------------------------
         # NUMERICAL
@@ -597,11 +862,9 @@ class InsightAgent:
 
                     continue
 
-
                 lines.append(
                     f"Numerical column: {column}"
                 )
-
 
                 for key, label in [
 
@@ -644,7 +907,6 @@ class InsightAgent:
 
                         continue
 
-
                     if isinstance(
                         value,
                         (int, float)
@@ -661,7 +923,6 @@ class InsightAgent:
                             f"- {label}: "
                             f"{value}"
                         )
-
 
         # ----------------------------------------------------
         # CATEGORICAL
@@ -692,11 +953,9 @@ class InsightAgent:
 
                     continue
 
-
                 lines.append(
                     f"Categorical column: {column}"
                 )
-
 
                 for key, label in [
 
@@ -727,7 +986,6 @@ class InsightAgent:
                             f"- {label}: "
                             f"{stats[key]}"
                         )
-
 
         # ----------------------------------------------------
         # DISTRIBUTIONS
@@ -760,12 +1018,10 @@ class InsightAgent:
 
                     continue
 
-
                 lines.append(
                     f"Distribution for "
                     f"{column}:"
                 )
-
 
                 skewness = (
                     distribution.get(
@@ -778,7 +1034,6 @@ class InsightAgent:
                         "shape"
                     )
                 )
-
 
                 if skewness is not None:
 
@@ -796,13 +1051,11 @@ class InsightAgent:
 
                         pass
 
-
                 if shape is not None:
 
                     lines.append(
                         f"- Shape: {shape}"
                     )
-
 
         # ----------------------------------------------------
         # DATETIME
@@ -835,11 +1088,9 @@ class InsightAgent:
 
                     continue
 
-
                 lines.append(
                     f"Datetime column: {column}"
                 )
-
 
                 for key, label in [
 
@@ -876,7 +1127,6 @@ class InsightAgent:
                             f"{info[key]}"
                         )
 
-
         # ----------------------------------------------------
         # CORRELATIONS
         # ----------------------------------------------------
@@ -908,14 +1158,12 @@ class InsightAgent:
 
                     continue
 
-
                 column_1, column_2 = (
                     pair.split(
                         " vs ",
                         1
                     )
                 )
-
 
                 if (
                     column_1
@@ -926,7 +1174,6 @@ class InsightAgent:
                 ):
 
                     continue
-
 
                 try:
 
@@ -941,11 +1188,9 @@ class InsightAgent:
 
                     continue
 
-
                 absolute_value = abs(
                     numeric_value
                 )
-
 
                 if absolute_value >= 0.7:
 
@@ -959,7 +1204,6 @@ class InsightAgent:
 
                     strength = "weak"
 
-
                 if numeric_value > 0:
 
                     direction = "positive"
@@ -971,7 +1215,6 @@ class InsightAgent:
                 else:
 
                     direction = "no"
-
 
                 lines.append(
                     f"Correlation: {pair}"
@@ -988,7 +1231,6 @@ class InsightAgent:
                     f"{direction} correlation"
                 )
 
-
         if not lines:
 
             return (
@@ -996,14 +1238,12 @@ class InsightAgent:
                 "was available."
             )
 
-
         return "\n".join(
             lines
         )
 
-
     # ========================================================
-    # 7. BUILD PROMPT
+    # 8. BUILD PROMPT
     # ========================================================
 
     def build_prompt(
@@ -1013,8 +1253,17 @@ class InsightAgent:
         result_context,
         quality_context,
         anomaly_context,
-        eda_context
+        eda_context,
+        ml_anomaly_context
     ):
+        """
+        Build the final evidence-grounded prompt.
+
+        The LLM interprets evidence.
+
+        It does NOT perform the mathematical anomaly
+        detection itself.
+        """
 
         return f"""
 You are the Insight Agent inside an automated
@@ -1033,7 +1282,7 @@ ORIGINAL USER QUESTION
 SQL USED
 ==================================================
 
-{sql}
+{sql if sql.strip() else "No SQL was used for this analysis."}
 
 ==================================================
 SQL RESULT
@@ -1042,16 +1291,22 @@ SQL RESULT
 {result_context}
 
 ==================================================
+SCIKIT-LEARN ML ANOMALY DETECTION
+==================================================
+
+{ml_anomaly_context}
+
+==================================================
+EXISTING DETERMINISTIC ANOMALIES
+==================================================
+
+{anomaly_context}
+
+==================================================
 RELEVANT DATA QUALITY INFORMATION
 ==================================================
 
 {quality_context}
-
-==================================================
-RELEVANT ANOMALIES
-==================================================
-
-{anomaly_context}
 
 ==================================================
 RELEVANT EDA
@@ -1065,41 +1320,65 @@ INSTRUCTIONS
 
 1. Answer the original question directly.
 
-2. Treat the SQL result as the primary evidence.
+2. Use the provided analytical evidence as the
+   basis for the answer.
 
-3. Use EDA only as supporting analytical context.
+3. If Scikit-learn ML anomaly results are provided,
+   treat them as mathematical anomaly-detection
+   results produced by Isolation Forest.
 
-4. Never invent numbers, categories, percentages,
-   causes, units, currencies, dates, or facts.
+4. Do NOT independently decide which records are
+   anomalous. The ML model has already made that
+   mathematical decision.
 
-5. Never claim causation from correlation.
+5. Explain why the returned records were flagged
+   only using the numerical evidence supplied.
 
-6. Statistical outliers are flagged observations,
-   not automatically errors.
+6. Treat ML anomaly scores as model scores. Do not
+   invent a unit or interpretation that is not
+   supported by the evidence.
 
-7. Missing data should be mentioned only when
-   relevant to the requested analysis.
+7. If SQL results are provided, use them as
+   analytical evidence.
 
-8. Do not assume currencies or measurement units.
+8. If SQL was not used, do not claim that SQL
+   analysis was performed.
 
-9. If the SQL result is empty, clearly state that
-   no matching records were returned.
+9. Use EDA only as supporting analytical context.
 
-10. If evidence is insufficient, say so.
+10. Existing deterministic anomalies and ML-based
+    anomalies are different detection methods.
+    Do not present them as the same method.
 
-11. Keep the answer concise and analytical.
+11. Never invent numbers, categories, percentages,
+    causes, units, currencies, dates, or facts.
 
-12. Do not output the SQL query.
+12. Never claim causation from correlation.
 
-13. Do not mention Gemini, LLMs, prompts,
-    agents, or internal architecture.
+13. Statistical outliers are flagged observations,
+    not automatically errors.
+
+14. Missing data should be mentioned only when
+    relevant to the requested analysis.
+
+15. Do not assume currencies or measurement units.
+
+16. If no anomalies were detected, clearly state that.
+
+17. If evidence is insufficient, say so.
+
+18. Keep the answer concise and analytical.
+
+19. Do not output the SQL query.
+
+20. Do not mention Gemini, LLMs, prompts, agents,
+    or internal architecture.
 
 Generate the final analytical insight:
 """
 
-
     # ========================================================
-    # 8. GENERATE LLM INSIGHT
+    # 9. GENERATE LLM INSIGHT
     # ========================================================
 
     def generate_insight(
@@ -1109,15 +1388,19 @@ Generate the final analytical insight:
         result,
         quality_report=None,
         anomalies=None,
-        eda_results=None
+        eda_results=None,
+        ml_anomaly_result=None
     ):
+        """
+        Generate an insight using SQL and/or ML evidence.
+        """
 
         self.validate_inputs(
             question,
             sql,
-            result
+            result,
+            ml_anomaly_result
         )
-
 
         relevant_columns = (
             self.identify_relevant_columns(
@@ -1133,13 +1416,11 @@ Generate the final analytical insight:
             )
         )
 
-
         result_context = (
             self.prepare_result_context(
                 result
             )
         )
-
 
         quality_context = (
             self.prepare_quality_context(
@@ -1150,7 +1431,6 @@ Generate the final analytical insight:
             )
         )
 
-
         anomaly_context = (
             self.prepare_anomaly_context(
 
@@ -1159,7 +1439,6 @@ Generate the final analytical insight:
                 relevant_columns
             )
         )
-
 
         eda_context = (
             self.prepare_eda_context(
@@ -1170,6 +1449,11 @@ Generate the final analytical insight:
             )
         )
 
+        ml_anomaly_context = (
+            self.prepare_ml_anomaly_context(
+                ml_anomaly_result
+            )
+        )
 
         prompt = self.build_prompt(
 
@@ -1189,16 +1473,17 @@ Generate the final analytical insight:
                 anomaly_context,
 
             eda_context=
-                eda_context
-        )
+                eda_context,
 
+            ml_anomaly_context=
+                ml_anomaly_context
+        )
 
         insight = (
             self.llm_service.generate(
                 prompt
             )
         )
-
 
         if not isinstance(
             insight,
@@ -1209,12 +1494,10 @@ Generate the final analytical insight:
                 insight
             )
 
-
         return insight.strip()
 
-
     # ========================================================
-    # 9. FORMAT LOCAL VALUE
+    # 10. FORMAT LOCAL VALUE
     # ========================================================
 
     def _format_value(
@@ -1225,7 +1508,6 @@ Generate the final analytical insight:
         if value is None:
 
             return "missing"
-
 
         try:
 
@@ -1242,7 +1524,6 @@ Generate the final analytical insight:
 
             pass
 
-
         if isinstance(
             value,
             float
@@ -1258,7 +1539,6 @@ Generate the final analytical insight:
                 f"{value:,.2f}"
             )
 
-
         if isinstance(
             value,
             int
@@ -1268,14 +1548,12 @@ Generate the final analytical insight:
                 f"{value:,}"
             )
 
-
         return str(
             value
         )
 
-
     # ========================================================
-    # 10. LOCAL FALLBACK INSIGHT
+    # 11. LOCAL FALLBACK INSIGHT
     # ========================================================
 
     def generate_fallback_insight(
@@ -1283,15 +1561,84 @@ Generate the final analytical insight:
         question,
         result,
         relevant_columns=None,
-        quality_report=None
+        quality_report=None,
+        ml_anomaly_result=None
     ):
         """
-        Generate a deterministic analytical summary without
-        calling an external model.
+        Generate a deterministic analytical summary
+        without calling an external model.
 
-        This is intentionally conservative. It describes only
-        what can be established directly from the SQL result.
+        ML anomaly results are summarized directly when
+        available.
         """
+
+        # ----------------------------------------------------
+        # ML ANOMALY FALLBACK
+        # ----------------------------------------------------
+
+        if isinstance(
+            ml_anomaly_result,
+            dict
+        ) and ml_anomaly_result:
+
+            anomaly_count = (
+                ml_anomaly_result.get(
+                    "anomaly_count",
+                    0
+                )
+            )
+
+            anomaly_percentage = (
+                ml_anomaly_result.get(
+                    "anomaly_percentage",
+                    0
+                )
+            )
+
+            algorithm = (
+                ml_anomaly_result.get(
+                    "algorithm",
+                    "Isolation Forest"
+                )
+            )
+
+            rows_analyzed = (
+                ml_anomaly_result.get(
+                    "rows_analyzed"
+                )
+            )
+
+            if anomaly_count == 0:
+
+                return (
+                    f"{algorithm} did not identify "
+                    "any anomalous records in the "
+                    "analyzed dataset."
+                )
+
+            if rows_analyzed is not None:
+
+                return (
+                    f"{algorithm} identified "
+                    f"{int(anomaly_count):,} anomalous "
+                    f"record"
+                    f"{'s' if int(anomaly_count) != 1 else ''} "
+                    f"out of {int(rows_analyzed):,} analyzed "
+                    f"records ({float(anomaly_percentage):.2f}%)."
+                )
+
+            return (
+                f"{algorithm} identified "
+                f"{int(anomaly_count):,} anomalous "
+                f"record"
+                f"{'s' if int(anomaly_count) != 1 else ''} "
+                f"({float(anomaly_percentage):.2f}% of the "
+                "analyzed data)."
+            )
+
+        # ----------------------------------------------------
+        # EXISTING FALLBACK
+        # ----------------------------------------------------
 
         if not isinstance(
             result,
@@ -1303,14 +1650,12 @@ Generate the final analytical insight:
                 "could not be summarized."
             )
 
-
         if result.empty:
 
             return (
                 "The query completed successfully, "
                 "but no matching records were returned."
             )
-
 
         rows = len(
             result
@@ -1319,7 +1664,6 @@ Generate the final analytical insight:
         columns = list(
             result.columns
         )
-
 
         # ----------------------------------------------------
         # SINGLE KPI
@@ -1346,7 +1690,6 @@ Generate the final analytical insight:
                 f"is {self._format_value(value)}."
             )
 
-
         numeric_columns = list(
             result.select_dtypes(
                 include="number"
@@ -1363,7 +1706,6 @@ Generate the final analytical insight:
             not in numeric_columns
         ]
 
-
         lines = [
 
             (
@@ -1372,7 +1714,6 @@ Generate the final analytical insight:
                 f"record{'s' if rows != 1 else ''}."
             )
         ]
-
 
         # ----------------------------------------------------
         # CATEGORY + NUMERIC
@@ -1392,7 +1733,6 @@ Generate the final analytical insight:
                 numeric_columns[0]
             )
 
-
             valid = (
                 result[
                     [
@@ -1402,7 +1742,6 @@ Generate the final analytical insight:
                 ]
                 .dropna()
             )
-
 
             if not valid.empty:
 
@@ -1418,7 +1757,6 @@ Generate the final analytical insight:
                     ].idxmin()
                 )
 
-
                 maximum_category = (
                     valid.loc[
                         maximum_index,
@@ -1432,7 +1770,6 @@ Generate the final analytical insight:
                         metric
                     ]
                 )
-
 
                 minimum_category = (
                     valid.loc[
@@ -1448,7 +1785,6 @@ Generate the final analytical insight:
                     ]
                 )
 
-
                 lines.append(
 
                     f"The highest "
@@ -1459,7 +1795,6 @@ Generate the final analytical insight:
                     f"{self._format_value(maximum_category)}."
                 )
 
-
                 if len(valid) > 1:
 
                     lines.append(
@@ -1469,7 +1804,6 @@ Generate the final analytical insight:
                         f"for "
                         f"{self._format_value(minimum_category)}."
                     )
-
 
         # ----------------------------------------------------
         # NUMERIC RESULT
@@ -1489,7 +1823,6 @@ Generate the final analytical insight:
                 .dropna()
             )
 
-
             if not values.empty:
 
                 lines.append(
@@ -1502,7 +1835,6 @@ Generate the final analytical insight:
                     f"with an average of "
                     f"{self._format_value(values.mean())}."
                 )
-
 
         # ----------------------------------------------------
         # CATEGORICAL RESULT
@@ -1523,7 +1855,6 @@ Generate the final analytical insight:
                 .value_counts()
             )
 
-
             if not counts.empty:
 
                 most_common = (
@@ -1534,7 +1865,6 @@ Generate the final analytical insight:
                     counts.iloc[0]
                 )
 
-
                 lines.append(
 
                     f"The most frequent "
@@ -1543,7 +1873,6 @@ Generate the final analytical insight:
                     f"{int(count):,} time"
                     f"{'s' if int(count) != 1 else ''}."
                 )
-
 
         # ----------------------------------------------------
         # RELEVANT MISSING VALUES
@@ -1561,7 +1890,6 @@ Generate the final analytical insight:
             relevant_columns = (
                 relevant_columns or []
             )
-
 
             relevant_missing = {
 
@@ -1581,7 +1909,6 @@ Generate the final analytical insight:
                 )
             }
 
-
             if relevant_missing:
 
                 missing_text = ", ".join(
@@ -1592,7 +1919,6 @@ Generate the final analytical insight:
                     in relevant_missing.items()
                 )
 
-
                 lines.append(
 
                     "Interpret this result with care "
@@ -1600,14 +1926,12 @@ Generate the final analytical insight:
                     f"remain ({missing_text})."
                 )
 
-
         return " ".join(
             lines
         )
 
-
     # ========================================================
-    # 11. PRETTY NAME
+    # 12. PRETTY NAME
     # ========================================================
 
     def _pretty_name(
@@ -1625,9 +1949,8 @@ Generate the final analytical insight:
             .title()
         )
 
-
     # ========================================================
-    # 12. ANALYZE SQL RESPONSE
+    # 13. ANALYZE SQL RESPONSE
     # ========================================================
 
     def analyze(
@@ -1635,8 +1958,17 @@ Generate the final analytical insight:
         sql_response,
         quality_report=None,
         anomalies=None,
-        eda_results=None
+        eda_results=None,
+        ml_anomaly_result=None
     ):
+        """
+        Analyze a completed SQL response.
+
+        Existing SQL behavior is preserved.
+
+        ML anomaly evidence can also be supplied when
+        available.
+        """
 
         if not isinstance(
             sql_response,
@@ -1646,7 +1978,6 @@ Generate the final analytical insight:
             raise TypeError(
                 "SQL response must be a dictionary."
             )
-
 
         # ----------------------------------------------------
         # SQL FAILED
@@ -1695,7 +2026,6 @@ Generate the final analytical insight:
                     )
             }
 
-
         question = (
             sql_response.get(
                 "question"
@@ -1714,9 +2044,8 @@ Generate the final analytical insight:
             )
         )
 
-
         # ----------------------------------------------------
-        # IDENTIFY COLUMNS BEFORE LLM CALL
+        # IDENTIFY COLUMNS
         # ----------------------------------------------------
 
         try:
@@ -1738,7 +2067,6 @@ Generate the final analytical insight:
         except Exception:
 
             relevant_columns = []
-
 
         # ----------------------------------------------------
         # TRY LLM
@@ -1765,10 +2093,12 @@ Generate the final analytical insight:
                         anomalies,
 
                     eda_results=
-                        eda_results
+                        eda_results,
+
+                    ml_anomaly_result=
+                        ml_anomaly_result
                 )
             )
-
 
             if insight:
 
@@ -1802,7 +2132,6 @@ Generate the final analytical insight:
                         None
                 }
 
-
         except Exception as error:
 
             llm_error = str(
@@ -1820,7 +2149,6 @@ Generate the final analytical insight:
             llm_error = (
                 "LLM returned an empty insight."
             )
-
 
         # ----------------------------------------------------
         # LOCAL FALLBACK
@@ -1841,10 +2169,12 @@ Generate the final analytical insight:
                         relevant_columns,
 
                     quality_report=
-                        quality_report
+                        quality_report,
+
+                    ml_anomaly_result=
+                        ml_anomaly_result
                 )
             )
-
 
             return {
 
@@ -1879,13 +2209,9 @@ Generate the final analytical insight:
                     llm_error
             }
 
-
         except Exception as fallback_error:
 
             return {
-
-                # SQL is still valid, so insight failure
-                # should not invalidate the analysis.
 
                 "success":
                     True,

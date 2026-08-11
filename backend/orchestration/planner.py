@@ -143,6 +143,28 @@ def _fallback_plan(
         tools.append(
             "visualization"
         )
+    # --------------------------------------------------------
+    # ML ANOMALY DETECTION
+    # --------------------------------------------------------
+
+    if any(
+        word in question_lower
+        for word in [
+            "anomaly",
+            "anomalies",
+            "anomalous",
+            "outlier",
+            "outliers",
+            "unusual",
+            "abnormal",
+            "suspicious",
+            "irregular",
+        ]
+    ):
+        tools.append(
+            "ml_anomaly"
+        )
+
 
     # --------------------------------------------------------
     # Insight
@@ -319,7 +341,25 @@ in AVAILABLE TOOLS.
 9. Order the tools exactly in the sequence in which
 they should execute.
 
-10. The JSON must have exactly this structure:
+10. When the user asks to detect anomalies, outliers,
+unusual records, abnormal observations, suspicious
+records, or similar multivariate numerical patterns,
+prefer the "ml_anomaly" tool.
+
+11. The "ml_anomaly" tool performs mathematical
+unsupervised anomaly detection using Isolation Forest.
+Do not replace it with SQL when actual ML-based
+anomaly detection is requested.
+
+12. If the user asks only for a simple aggregation,
+filter, ranking, or other SQL operation, do not invoke
+"ml_anomaly" unnecessarily.
+
+13. If the user asks for anomaly detection followed by
+an explanation or business interpretation, use
+"ml_anomaly" followed by "insight" when appropriate.
+
+14. The JSON must have exactly this structure:
 
 {{
     "intent": "short_intent_name",

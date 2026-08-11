@@ -14,6 +14,10 @@ from backend.orchestration.tools.insight_tools import (
     generate_analytical_insight,
 )
 
+from backend.orchestration.tools.ml_anomaly_tools import (
+    run_ml_anomaly_detection,
+)
+
 
 # ============================================================
 # TOOL REGISTRY
@@ -148,6 +152,12 @@ TOOL_REGISTRY = {
 
             "generated_sql":
                 "generated_sql",
+
+            "ml_anomaly_result":
+
+                "tool_outputs.ml_anomaly_result",
+
+            
         },
 
         "outputs": {
@@ -157,6 +167,42 @@ TOOL_REGISTRY = {
 
         "dependencies": [],
     },
+
+# --------------------------------------------------------
+# ML ANOMALY DETECTION
+# --------------------------------------------------------
+
+    "ml_anomaly": {
+
+        "tool":
+            run_ml_anomaly_detection,
+
+        "description": (
+            "Detect multivariate numerical anomalies "
+            "using the Scikit-learn Isolation Forest "
+            "unsupervised machine learning algorithm. "
+            "Use this when mathematical ML-based anomaly "
+            "detection is required."
+        ),
+
+        "inputs": {
+            "dataset_id":
+                "dataset_id",
+
+            
+        },
+
+        "outputs": {
+
+            "ml_anomaly_result":
+                "ml_anomaly_result",
+
+        },
+
+        "dependencies": [],
+    },
+
+
 }
 
 
