@@ -1,10 +1,15 @@
+import json
+
 import pandas as pd
+import requests
 import streamlit as st
 
 from frontend.api_client import api
 from frontend.utils.chart_renderer import (
     render_chart,
 )
+
+from frontend.utils.executive_report import build_executive_report
 
 
 # ============================================================
@@ -22,6 +27,15 @@ def _initialize_question_state():
 
     if "last_question" not in st.session_state:
         st.session_state.last_question = ""
+
+    if "business_report" not in st.session_state:
+        st.session_state.business_report = None
+
+    if "business_report_pdf" not in st.session_state:
+        st.session_state.business_report_pdf = None
+
+    if "business_report_path" not in st.session_state:
+        st.session_state.business_report_path = None
 
 
 # ============================================================
@@ -585,6 +599,450 @@ def _render_trace(
 
 
 # ============================================================
+# BUSINESS REPORT REQUEST
+# ============================================================
+
+def _generate_business_report(
+    dataset_id,
+    question,
+    analysis_response,
+):
+    """
+    Send the already completed analysis response
+    to the backend business-report endpoint.
+
+    IMPORTANT:
+
+    The agent is NOT executed again.
+
+    The exact response already displayed to the user
+    is reused to construct the report.
+    """
+
+    if not dataset_id:
+
+        raise ValueError(
+            "Dataset ID is required."
+        )
+
+    if not question:
+
+        raise ValueError(
+            "Question is required."
+        )
+
+    if not isinstance(
+        analysis_response,
+        dict,
+    ):
+
+        raise ValueError(
+            "Analysis response is invalid."
+        )
+
+    # --------------------------------------------------------
+    # Backend URL
+    # --------------------------------------------------------
+
+    base_url = getattr(
+        api,
+        "base_url",
+        None,
+    )
+
+    if not base_url:
+
+        raise RuntimeError(
+            "API client does not expose base_url."
+        )
+
+    base_url = base_url.rstrip(
+        "/"
+    )
+
+    url = (
+        f"{base_url}"
+        f"/datasets/{dataset_id}/report"
+    )
+
+    # --------------------------------------------------------
+    # Request
+    # --------------------------------------------------------
+
+    response = requests.post(
+
+        url,
+
+        data={
+            "question":
+                question,
+
+            "analysis_response":
+                json.dumps(
+                    analysis_response,
+                    default=str,
+                ),
+        },
+
+        timeout=120,
+    )
+
+    # --------------------------------------------------------
+    # Error handling
+    # --------------------------------------------------------
+
+    if response.status_code != 200:
+
+        try:
+
+            error_data = (
+                response.json()
+            )
+
+            raise RuntimeError(
+                str(
+                    error_data
+                )
+            )
+
+        except ValueError:
+
+            raise RuntimeError(
+                response.text
+            )
+
+    try:
+
+        result = (
+            response.json()
+        )
+
+    except ValueError as error:
+
+        raise RuntimeError(
+            "Backend returned invalid JSON."
+        ) from error
+
+    if not isinstance(
+        result,
+        dict,
+    ):
+
+        raise RuntimeError(
+            "Invalid business report response."
+        )
+
+    if not result.get(
+        "success",
+        False,
+    ):
+
+        raise RuntimeError(
+            result.get(
+                "error",
+                "Business report generation failed.",
+            )
+        )
+
+    return result
+
+
+# ============================================================
+# REPORT TEXT EXTRACTION
+# ============================================================
+
+def _extract_report_text(
+    report_response,
+):
+    """
+    Support multiple possible report-service response
+    field names without changing the backend contract.
+    """
+
+    if not isinstance(
+        report_response,
+        dict,
+    ):
+
+        return ""
+
+    possible_fields = [
+
+        "report",
+
+        "markdown",
+
+        "markdown_report",
+
+        "report_markdown",
+
+        "content",
+
+        "text",
+    ]
+
+    for field in possible_fields:
+
+        value = report_response.get(
+            field
+        )
+
+        if isinstance(
+            value,
+            str,
+        ) and value.strip():
+
+            return value
+
+    return ""
+
+
+# ============================================================
+# BUSINESS REPORT UI
+# ============================================================
+
+def _render_business_report_section(
+    dataset_id,
+):
+    """
+    Render the business stakeholder report section.
+    """
+
+    response = (
+        st.session_state.get(
+            "analysis_response"
+        )
+    )
+
+    if not response:
+        return
+
+    st.divider()
+
+    st.subheader(
+        "Business Stakeholder Report"
+    )
+
+    st.write(
+        "Create a human-readable executive report "
+        "from the analysis above. The existing "
+        "analytical response is reused, so the "
+        "agent is not executed again."
+    )
+
+    generate_report = st.button(
+
+        "Generate Executive Report",
+
+        type="secondary",
+
+        width="stretch",
+
+        key="generate_executive_report",
+    )
+
+    if generate_report:
+
+        question = (
+            st.session_state.get(
+                "last_question"
+            )
+            or
+            response.get(
+                "question",
+                "",
+            )
+        )
+
+        if not question:
+
+            st.error(
+                "The original question could not be found."
+            )
+
+            return
+
+        try:
+
+            with st.spinner(
+                "Preparing your executive business report..."
+            ):
+
+                report_response = (
+                    _generate_business_report(
+
+                        dataset_id=
+                            dataset_id,
+
+                        question=
+                            question,
+
+                        analysis_response=
+                            response,
+                    )
+                )
+
+            st.session_state.business_report = (
+                report_response
+            )
+
+            st.success(
+                "Executive report generated successfully."
+            )
+
+        except Exception as error:
+
+            st.session_state.business_report = (
+                None
+            )
+
+            st.error(
+                f"Could not generate report: {error}"
+            )
+
+    # --------------------------------------------------------
+    # DISPLAY EXISTING REPORT
+    # --------------------------------------------------------
+
+    business_report = (
+        st.session_state.get(
+            "business_report"
+        )
+    )
+
+    if not business_report:
+        return
+
+    markdown_report = (
+        _extract_report_text(
+            business_report
+        )
+    )
+
+    if not markdown_report:
+
+        st.warning(
+            "The report service returned no report content."
+        )
+
+        with st.expander(
+            "Report Response"
+        ):
+
+            st.json(
+                business_report
+            )
+
+        return
+
+    # --------------------------------------------------------
+    # REPORT PREVIEW
+    # --------------------------------------------------------
+
+    with st.expander(
+        "Preview Executive Report",
+        expanded=True,
+    ):
+
+        st.markdown(
+            markdown_report
+        )
+
+    # --------------------------------------------------------
+    # STAKEHOLDER-READY PDF
+    # --------------------------------------------------------
+
+    try:
+
+        pdf_bytes, saved_pdf_path = (
+            build_executive_report(
+                question=question,
+                analysis_response=response,
+                report_markdown=markdown_report,
+                dataset_id=dataset_id,
+                output_dir="reports",
+            )
+        )
+
+        st.session_state.business_report_pdf = (
+            pdf_bytes
+        )
+
+        st.session_state.business_report_path = (
+            saved_pdf_path
+        )
+
+        st.success(
+            "Stakeholder-ready executive PDF created successfully."
+        )
+
+        st.caption(
+            f"Saved to: {saved_pdf_path}"
+        )
+
+        pdf_file_name = (
+            saved_pdf_path
+            .replace("\\", "/")
+            .split("/")[-1]
+        )
+
+        st.download_button(
+
+            label=
+                "Download Executive Report PDF",
+
+            data=
+                pdf_bytes,
+
+            file_name=
+                pdf_file_name,
+
+            mime=
+                "application/pdf",
+
+            type="primary",
+
+            width="stretch",
+
+            key=
+                "download_executive_report_pdf",
+        )
+
+    except Exception as error:
+
+        st.error(
+            "PDF generation failed: "
+            f"{error}"
+        )
+
+    # --------------------------------------------------------
+    # MARKDOWN DOWNLOAD
+    # --------------------------------------------------------
+
+    st.download_button(
+
+        label=
+            "Download Markdown Report",
+
+        data=
+            markdown_report,
+
+        file_name=(
+            "InsightFlow_"
+            "Executive_Report.md"
+        ),
+
+        mime=
+            "text/markdown",
+
+        width="stretch",
+
+        key=
+            "download_executive_report_md",
+    )
+
+
+# ============================================================
 # ANALYSIS RESPONSE
 # ============================================================
 
@@ -653,6 +1111,26 @@ def _render_analysis_response(
         )
     )
 
+    # Support nested response shape used by the
+    # updated API.
+
+    if not generated_sql:
+
+        analysis = response.get(
+            "analysis"
+        )
+
+        if isinstance(
+            analysis,
+            dict,
+        ):
+
+            generated_sql = (
+                analysis.get(
+                    "generated_sql"
+                )
+            )
+
     if generated_sql:
 
         st.subheader(
@@ -686,6 +1164,25 @@ def _render_analysis_response(
         result = response.get(
             "results"
         )
+
+    # Support nested API response.
+
+    if result is None:
+
+        analysis = response.get(
+            "analysis"
+        )
+
+        if isinstance(
+            analysis,
+            dict,
+        ):
+
+            result = (
+                analysis.get(
+                    "sql_result"
+                )
+            )
 
     if result is not None:
 
@@ -731,6 +1228,7 @@ def _render_analysis_response(
             with st.expander(
                 "Visualization Data"
             ):
+
                 st.json(
                     visualization
                 )
@@ -746,11 +1244,6 @@ def _render_analysis_response(
     insight = response.get(
         "insight"
     )
-
-    if insight is None:
-        insight = response.get(
-            "analysis"
-        )
 
     if insight is None:
         insight = response.get(
@@ -886,6 +1379,10 @@ def render_question_section(
         Final Analytical Response
               ↓
         Streamlit
+              ↓
+        Business Report
+              ↓
+        PDF / Markdown
     """
 
     _initialize_question_state()
@@ -921,20 +1418,29 @@ def render_question_section(
     # --------------------------------------------------------
 
     question = st.text_area(
+
         "Ask a question about your dataset",
+
         value="",
+
         placeholder=(
             "Example: Compare average sales by region "
             "and explain the main differences."
         ),
+
         height=100,
+
         key="insightflow_question_input",
     )
 
     ask_button = st.button(
+
         "Ask InsightFlow",
+
         type="primary",
+
         width="stretch",
+
         key="insightflow_ask_button",
     )
 
@@ -978,9 +1484,38 @@ def render_question_section(
                     cleaned_question
                 )
 
+                # Clear an old report whenever a
+                # completely new analysis is performed.
+
+                st.session_state.business_report = (
+                    None
+                )
+
+                st.session_state.business_report_pdf = (
+                    None
+                )
+
+                st.session_state.business_report_path = (
+                    None
+                )
+
+                st.session_state.business_report_pdf = (
+                    None
+                )
+
+                st.session_state.business_report_path = (
+                    None
+                )
+
             except Exception as error:
 
-                st.session_state.analysis_response = None
+                st.session_state.analysis_response = (
+                    None
+                )
+
+                st.session_state.business_report = (
+                    None
+                )
 
                 st.error(
                     f"Analysis failed: {error}"
@@ -998,4 +1533,12 @@ def render_question_section(
 
         _render_analysis_response(
             response
+        )
+
+        # ----------------------------------------------------
+        # BUSINESS REPORT
+        # ----------------------------------------------------
+
+        _render_business_report_section(
+            dataset_id
         )

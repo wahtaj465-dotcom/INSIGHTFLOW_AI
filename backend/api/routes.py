@@ -2,6 +2,7 @@ from pathlib import Path
 from uuid import uuid4
 from datetime import datetime, date
 
+import json
 import shutil
 import math
 
@@ -26,6 +27,10 @@ from backend.services.dataset_manager import (
 
 from backend.services.agent_service import (
     agent_service,
+)
+
+from backend.services.report_service import (
+    BusinessReportService,
 )
 
 
@@ -1242,6 +1247,304 @@ def ask_dataset(
                     str(
                         error
                     ),
+            },
+        ) from error
+
+
+# ============================================================
+# BUSINESS EXECUTIVE REPORT
+# ============================================================
+
+@router.post(
+    "/datasets/{dataset_id}/report"
+)
+def generate_business_report(
+    dataset_id: str,
+    question: str = Form(...),
+    analysis_response: str = Form(...),
+):
+    """
+    Generate a business-stakeholder-friendly Markdown
+    report from an already completed analytics response.
+
+    IMPORTANT:
+
+    This endpoint does NOT run the agent again.
+
+    The frontend sends the response that the user has
+    already received from /ask. This allows the report to
+    reuse:
+
+        - SQL results
+        - generated SQL
+        - AI insight
+        - statistical findings
+        - visualizations
+        - ML anomaly detection
+        - execution metadata
+
+    without making another LLM call.
+    """
+
+    # --------------------------------------------------------
+    # VALIDATE DATASET ID
+    # --------------------------------------------------------
+
+    dataset_id = (
+        validate_dataset_id(
+            dataset_id
+        )
+    )
+
+    # --------------------------------------------------------
+    # VALIDATE QUESTION
+    # --------------------------------------------------------
+
+    question = (
+        validate_question(
+            question
+        )
+    )
+
+    # --------------------------------------------------------
+    # CHECK DATASET
+    # --------------------------------------------------------
+
+    if not dataset_manager.exists(
+        dataset_id
+    ):
+
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "Dataset session not found."
+            ),
+        )
+
+    # --------------------------------------------------------
+    # VALIDATE ANALYSIS RESPONSE
+    # --------------------------------------------------------
+
+    if not isinstance(
+        analysis_response,
+        str,
+    ):
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Analysis response must be "
+                "a JSON string."
+            ),
+        )
+
+    analysis_response = (
+        analysis_response.strip()
+    )
+
+    if not analysis_response:
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Analysis response cannot be empty."
+            ),
+        )
+
+    try:
+
+        existing_response = (
+            json.loads(
+                analysis_response
+            )
+        )
+
+    except (
+        json.JSONDecodeError,
+        TypeError,
+        ValueError,
+    ) as error:
+
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message":
+                    (
+                        "Analysis response "
+                        "must contain valid JSON."
+                    ),
+                "error":
+                    str(error),
+            },
+        ) from error
+
+    if not isinstance(
+        existing_response,
+        dict,
+    ):
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Analysis response must "
+                "decode to a JSON object."
+            ),
+        )
+
+    try:
+
+        # ====================================================
+        # RETRIEVE PREPARED DATASET INFORMATION
+        # ====================================================
+
+        dataset_info = (
+            dataset_manager
+            .get_dataset_info(
+                dataset_id
+            )
+            or {}
+        )
+
+        # ====================================================
+        # RETRIEVE PREPARED DATASET
+        # ====================================================
+
+        dataset = (
+            dataset_manager
+            .get_dataset(
+                dataset_id
+            )
+        )
+
+        # ====================================================
+        # BUILD REPORT SOURCE
+        # ====================================================
+
+        #
+        # Start with the exact response already shown
+        # to the user.
+        #
+
+        report_source = dict(
+            existing_response
+        )
+
+        #
+        # Add dataset information if the existing response
+        # does not already contain it.
+        #
+
+        if not report_source.get(
+            "dataset"
+        ):
+
+            report_source[
+                "dataset"
+            ] = dataset_info
+
+        #
+        # Add prepared dataset quality/anomaly information
+        # where available.
+        #
+
+        if isinstance(
+            dataset,
+            dict,
+        ):
+
+            if not report_source.get(
+                "quality"
+            ):
+
+                report_source[
+                    "quality"
+                ] = (
+                    dataset.get(
+                        "cleaned_quality_report"
+                    )
+                    or
+                    dataset.get(
+                        "quality_report"
+                    )
+                    or
+                    dataset.get(
+                        "quality"
+                    )
+                    or
+                    {}
+                )
+
+            if not report_source.get(
+                "anomalies"
+            ):
+
+                report_source[
+                    "anomalies"
+                ] = (
+                    dataset.get(
+                        "cleaned_anomalies"
+                    )
+                    or
+                    dataset.get(
+                        "anomaly_report"
+                    )
+                    or
+                    dataset.get(
+                        "anomalies"
+                    )
+                    or
+                    {}
+                )
+
+            if not report_source.get(
+                "statistical_findings"
+            ):
+
+                report_source[
+                    "statistical_findings"
+                ] = (
+                    dataset.get(
+                        "statistical_findings"
+                    )
+                    or
+                    []
+                )
+
+        # ====================================================
+        # GENERATE BUSINESS REPORT
+        # ====================================================
+
+        report_service = (
+            BusinessReportService()
+        )
+
+        report_response = (
+            report_service.generate_report(
+                dataset_id=dataset_id,
+                question=question,
+                response=report_source,
+            )
+        )
+
+        return make_json_safe(
+            report_response
+        )
+
+    except HTTPException:
+        raise
+
+    except Exception as error:
+
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message":
+                    (
+                        "Could not generate "
+                        "business report."
+                    ),
+                "error":
+                    str(error),
             },
         ) from error
 
