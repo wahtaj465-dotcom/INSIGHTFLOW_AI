@@ -1433,14 +1433,29 @@ def render_question_section(
         key="insightflow_question_input",
     )
 
-    ask_button = st.button(
+    # --------------------------------------------------------
+# POWER BI STYLE DASHBOARD
+# --------------------------------------------------------
 
-        "Ask InsightFlow",
-
-        type="primary",
-
+    dashboard_button = st.button(
+        "📊 Create Dashboard",
         width="stretch",
+        key="insightflow_dashboard_button",
+    )
 
+    if dashboard_button:
+        st.session_state["dashboard_dataset_id"] = dataset_id
+        st.switch_page("pages/dashboard.py")
+
+
+    # --------------------------------------------------------
+    # ASK INSIGHTFLOW
+    # --------------------------------------------------------
+
+    ask_button = st.button(
+        "Ask InsightFlow",
+        type="primary",
+        width="stretch",
         key="insightflow_ask_button",
     )
 

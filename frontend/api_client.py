@@ -736,6 +736,27 @@ class InsightFlowAPI:
         )
 
 
+    def get_dashboard_data(
+    self,
+    dataset_id,):
+        """
+        Retrieve the prepared dataset for
+        the dashboard.
+        """
+
+        response = requests.get(
+            (
+                f"{self.base_url}"
+                f"/datasets/{dataset_id}/dashboard-data"
+            ),
+            timeout=DEFAULT_TIMEOUT,
+        )
+
+        return self._handle_response(
+            response
+        )
+
+
 # ============================================================
 # SHARED API CLIENT
 # ============================================================
@@ -802,6 +823,13 @@ def ask_dataset(
     return api.ask_dataset(
         dataset_id,
         question,
+    )
+
+def get_dashboard_data(
+    dataset_id,
+):
+    return api.get_dashboard_data(
+        dataset_id
     )
 
 

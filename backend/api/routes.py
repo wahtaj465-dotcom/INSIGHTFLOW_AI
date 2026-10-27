@@ -1063,6 +1063,93 @@ def get_dataset(
         ) from error
 
 
+
+# ============================================================
+# GET DASHBOARD DATA
+# ============================================================
+
+@router.get(
+    "/datasets/{dataset_id}/dashboard-data"
+)
+def get_dashboard_data(
+    dataset_id: str
+):
+    """
+    Return the prepared/cleaned DataFrame for the
+    interactive dashboard.
+
+    This does NOT execute the LLM agent.
+    """
+
+    dataset_id = (
+        validate_dataset_id(
+            dataset_id
+        )
+    )
+
+    try:
+
+        dataframe = (
+            dataset_manager.get_dataframe(
+                dataset_id
+            )
+        )
+
+        if dataframe is None:
+
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    "Dataset session not found."
+                ),
+            )
+
+        return make_json_safe({
+
+            "success":
+                True,
+
+            "dataset_id":
+                dataset_id,
+
+            "rows":
+                len(dataframe),
+
+            "columns":
+                [
+                    str(column)
+                    for column in dataframe.columns
+                ],
+
+            "records":
+                dataframe.to_dict(
+                    orient="records"
+                ),
+        })
+
+    except HTTPException:
+        raise
+
+    except Exception as error:
+
+        raise HTTPException(
+            status_code=500,
+            detail={
+
+                "message":
+                    (
+                        "Could not prepare "
+                        "dashboard data."
+                    ),
+
+                "error":
+                    str(
+                        error
+                    ),
+            },
+        ) from error
+
+
 # ============================================================
 # ASK DATASET THROUGH AGENT GRAPH
 # ============================================================

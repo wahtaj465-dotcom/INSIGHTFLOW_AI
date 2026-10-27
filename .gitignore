@@ -33,4 +33,4 @@ data/uploads/
 # Test/cache files
 .pytest_cache/
 .coverage
-htmlcov/
+htmlcov/data/newfolder/cars_dataset.csv 
